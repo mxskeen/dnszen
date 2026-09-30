@@ -109,8 +109,15 @@ detect_platform() {
             ;;
         CYGWIN*|MINGW*|MSYS*)
             TARGET_OS="windows"
-            log_warn "Detected Windows environment (Bash). For best native Windows support,"
-            log_warn "please run the native PowerShell script: .\\dnszen.ps1"
+            log_info "Detected Windows environment. Launching native PowerShell installer..."
+            if command -v powershell.exe >/dev/null 2>&1; then
+                local ps_dir
+                ps_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -W 2>/dev/null || cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+                exec powershell.exe -ExecutionPolicy Bypass -File "${ps_dir}\\dnszen.ps1" "$@"
+            else
+                log_warn "Please open PowerShell as Administrator and run: .\\dnszen.ps1"
+                exit 1
+            fi
             ;;
         FreeBSD*)
             TARGET_OS="freebsd"
