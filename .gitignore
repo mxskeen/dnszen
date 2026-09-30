@@ -1,0 +1,10 @@
+# Binaries and caches
+*.tar.gz
+*.zip
+*.log
+*.bak
+*.orig
+
+# Temp folders
+tmp/
+.cache/
