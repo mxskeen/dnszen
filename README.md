@@ -19,24 +19,37 @@ System-wide custom DNS-over-HTTPS (DoH) for Linux, macOS, and Windows. Similar t
 
 ## Quickstart
 
-### Linux & macOS
+### One-Line Install (Zero Clone)
 
+**Linux & macOS:**
+```bash
+curl -sSL https://raw.githubusercontent.com/mxskeen/dnszen/master/install.sh | sudo bash
+```
+
+**Windows (PowerShell as Admin):**
+```powershell
+irm https://raw.githubusercontent.com/mxskeen/dnszen/master/install.ps1 | iex
+```
+
+<details>
+<summary><b>Or install via Git Clone</b></summary>
+
+**Linux & macOS:**
 ```bash
 git clone https://github.com/mxskeen/dnszen.git
 cd dnszen
 sudo ./install.sh
 ```
 
-### Windows
-
-Open PowerShell as **Administrator**:
-
+**Windows:**
 ```powershell
 git clone https://github.com/mxskeen/dnszen.git
 cd dnszen
 .\install.ps1
 ```
 *(If using Git Bash, running `./install.sh` will auto-launch the PowerShell installer).*
+
+</details>
 
 ---
 
@@ -56,6 +69,7 @@ From any terminal window:
 |---|---|---|
 | **Open Visual Menu** | `sudo dnszen` | `dnszen` |
 | **Change DoH URL** | `sudo dnszen set <url>` | `dnszen set <url>` |
+| **Verify Encryption & Leaks** | `sudo dnszen verify` | `dnszen verify` |
 | **Check Status** | `sudo dnszen status` | `dnszen status` |
 | **Test Query & Latency** | `sudo dnszen test [domain]` | `dnszen test [domain]` |
 | **Restart Service** | `sudo dnszen restart` | `dnszen restart` |
