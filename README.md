@@ -42,20 +42,22 @@ cd dnszen
 Once installed, manage DNSZen from any terminal window:
 
 ### Visual Menu
-```bash
-sudo dnszen
-```
+
+From any terminal window:
+- **Linux & macOS:** `sudo dnszen`
+- **Windows (PowerShell / CMD):** `dnszen` *(or `.\install.ps1`)*
 
 ### CLI Commands
 
-| Action | Linux / macOS | Windows (PowerShell) |
+| Action | Linux / macOS | Windows (PowerShell / CMD) |
 |---|---|---|
-| **Change DoH URL** | `sudo dnszen set <url>` | `.\dnszen.ps1 set <url>` |
-| **Check Status** | `sudo dnszen status` | `.\dnszen.ps1 status` |
-| **Test Query & Latency** | `sudo dnszen test [domain]` | `.\dnszen.ps1 test [domain]` |
-| **Restart Service** | `sudo dnszen restart` | `.\dnszen.ps1 restart` |
+| **Open Visual Menu** | `sudo dnszen` | `dnszen` |
+| **Change DoH URL** | `sudo dnszen set <url>` | `dnszen set <url>` |
+| **Check Status** | `sudo dnszen status` | `dnszen status` |
+| **Test Query & Latency** | `sudo dnszen test [domain]` | `dnszen test [domain]` |
+| **Restart Service** | `sudo dnszen restart` | `dnszen restart` |
 | **View Logs** | `sudo dnszen logs` | `Get-ScheduledTask DNSZen` |
-| **Revert to Original DNS** | `sudo dnszen revert` | `.\dnszen.ps1 revert` |
+| **Revert to Original DNS** | `sudo dnszen revert` | `dnszen revert` |
 
 ---
 

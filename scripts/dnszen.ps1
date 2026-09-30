@@ -280,6 +280,14 @@ function Invoke-Install {
     }
     $state | ConvertTo-Json | Set-Content $StateFile -Encoding UTF8
 
+    # Create global CLI wrapper in C:\Windows\dnszen.cmd
+    Copy-Item $MyInvocation.MyCommand.Path -Destination "$InstallDir\dnszen.ps1" -Force -ErrorAction SilentlyContinue
+    $cmdWrapper = @"
+@echo off
+powershell.exe -ExecutionPolicy Bypass -NoProfile -File "$InstallDir\dnszen.ps1" %*
+"@
+    Set-Content -Path "C:\Windows\dnszen.cmd" -Value $cmdWrapper -Encoding ASCII -Force -ErrorAction SilentlyContinue
+
     Start-Sleep -Seconds 2
     Write-Host ""
     Write-Host "===============================================================" -ForegroundColor Green
@@ -288,7 +296,88 @@ function Invoke-Install {
     Write-Host "  * Upstream DoH: $url" -ForegroundColor Cyan
     Write-Host "  * Primary DNS:  127.0.0.1:53"
     Write-Host "  * Task:         Runs at system startup under SYSTEM"
+    Write-Host "  * CLI Access:   Type 'dnszen' in any terminal window" -ForegroundColor Yellow
     Write-Host ""
+}
+
+function Show-Status {
+    if (Test-Path $StateFile) {
+        $st = Get-Content $StateFile | ConvertFrom-Json
+        Write-Host ""
+        Write-Host "--- DNSZen System Status ---" -ForegroundColor White
+        Write-Host "  Status:        ACTIVE" -ForegroundColor Green
+        Write-Host "  Upstream DoH:  $($st.DOH_URL)" -ForegroundColor Cyan
+        Write-Host "  Primary DNS:   127.0.0.1:53"
+        Write-Host "  Installed At:  $($st.InstalledAt)" -ForegroundColor DarkGray
+        Write-Host ""
+    } else {
+        Write-Host "DNSZen Status: NOT INSTALLED" -ForegroundColor Red
+    }
+}
+
+function Show-Menu {
+    while ($true) {
+        Show-Banner
+        $statusStr = "NOT INSTALLED"
+        $currentUrl = "None"
+        if (Test-Path $StateFile) {
+            $st = Get-Content $StateFile | ConvertFrom-Json
+            $statusStr = "ACTIVE"
+            $currentUrl = $st.DOH_URL
+        }
+        Write-Host "  Current Status: $statusStr" -ForegroundColor Green
+        Write-Host "  Active DoH URL: $currentUrl" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "  [1] Change DoH URL"
+        Write-Host "  [2] View Status & Live Diagnostics"
+        Write-Host "  [3] Test DNS Resolution & Speed"
+        Write-Host "  [4] Restart DNSZen Service"
+        Write-Host "  [5] Revert to Original DNS & Uninstall"
+        Write-Host ""
+        Write-Host "  Author GitHub: https://github.com/mxskeen/dnszen/" -ForegroundColor Cyan
+        Write-Host "  [6] Exit"
+        Write-Host ""
+        $choice = Read-Host "Select option [1-6]"
+        switch ($choice) {
+            "1" {
+                $newUrl = Prompt-DoHUrl
+                Write-ProxyConfig $newUrl
+                Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+                Start-ScheduledTask -TaskName $TaskName
+                $st = Get-Content $StateFile | ConvertFrom-Json
+                $st.DOH_URL = $newUrl
+                $st | ConvertTo-Json | Set-Content $StateFile -Encoding UTF8
+                Write-Host "[OK] Updated upstream DoH URL to: $newUrl" -ForegroundColor Green
+                Read-Host "Press Enter to return to menu..."
+            }
+            "2" {
+                Show-Status
+                Read-Host "Press Enter to return to menu..."
+            }
+            "3" {
+                $dom = Read-Host "Enter domain to test [default: cloudflare.com]"
+                if (-not $dom) { $dom = "cloudflare.com" }
+                Resolve-DnsName -Name $dom -Server "127.0.0.1"
+                Read-Host "Press Enter to return to menu..."
+            }
+            "4" {
+                Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+                Start-ScheduledTask -TaskName $TaskName
+                Write-Host "[OK] DNSZen service restarted." -ForegroundColor Green
+                Read-Host "Press Enter to return to menu..."
+            }
+            "5" {
+                $confirm = Read-Host "Are you sure you want to revert to original DNS? [y/N]"
+                if ($confirm -match "^[yY]") {
+                    Revert-SystemDNS
+                    Exit
+                }
+            }
+            "6" {
+                Exit
+            }
+        }
+    }
 }
 
 # Elevation check
@@ -307,34 +396,34 @@ switch ($Command.ToLower()) {
             Verify-DoHUrl $targetUrl | Out-Null
         }
         Write-ProxyConfig $targetUrl
-        Restart-Service -Name $TaskName -ErrorAction SilentlyContinue
         Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
         Start-ScheduledTask -TaskName $TaskName
+        if (Test-Path $StateFile) {
+            $st = Get-Content $StateFile | ConvertFrom-Json
+            $st.DOH_URL = $targetUrl
+            $st | ConvertTo-Json | Set-Content $StateFile -Encoding UTF8
+        }
         Write-Host "[OK] Updated upstream DoH URL to: $targetUrl" -ForegroundColor Green
     }
     "revert" {
         Revert-SystemDNS
     }
     "status" {
-        if (Test-Path $StateFile) {
-            $st = Get-Content $StateFile | ConvertFrom-Json
-            Write-Host "DNSZen Status: ACTIVE" -ForegroundColor Green
-            Write-Host "Upstream URL:  $($st.DOH_URL)" -ForegroundColor Cyan
-        } else {
-            Write-Host "DNSZen Status: NOT INSTALLED" -ForegroundColor Red
-        }
+        Show-Status
     }
     "test" {
         $dom = if ($Arg) { $Arg } else { "cloudflare.com" }
         Write-Host "Querying $dom via 127.0.0.1..."
         Resolve-DnsName -Name $dom -Server "127.0.0.1"
     }
+    "menu" {
+        Show-Menu
+    }
     Default {
         if (-not (Test-Path $StateFile)) {
             Invoke-Install
         } else {
-            Write-Host "DNSZen Windows Management"
-            Write-Host "Commands: .\dnszen.ps1 [install | set <url> | status | test | revert]"
+            Show-Menu
         }
     }
 }
