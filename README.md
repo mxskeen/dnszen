@@ -4,6 +4,16 @@ System-wide custom DNS-over-HTTPS (DoH) for Linux, macOS, and Windows. Similar t
 
 ---
 
+## Why System-Wide?
+
+- **Protects Everything, Not Just Browsers:** Browser-only DoH ignores terminal tools (`curl`, `git`, `docker`), desktop apps (Spotify, Discord, Slack, Steam), and system processes. DNSZen covers 100% of your system traffic.
+- **Blocks Ads & Trackers Across All Apps:** Filtering rules from your provider (e.g. NextDNS, AdGuard, Pi-hole) apply to all desktop software, not just websites.
+- **Prevents ISP Snooping & Hijacking:** DNS queries travel encrypted inside HTTPS (port 443), stopping ISP tracking, censorship, and Wi-Fi eavesdropping.
+- **Sub-Millisecond Caching:** Local in-memory caching serves repeated lookups instantly (`< 1 ms`).
+- **Network Agnostic:** Keeps your encrypted DNS active across Wi-Fi and Ethernet changes without DHCP leaks.
+
+---
+
 ## Quickstart
 
 ### Linux & macOS
