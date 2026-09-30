@@ -19,7 +19,7 @@ System-wide custom DNS-over-HTTPS (DoH) for Linux, macOS, and Windows. Similar t
 ### Linux & macOS
 
 ```bash
-git clone https://github.com/your-username/dnszen.git
+git clone https://github.com/mxskeen/dnszen.git
 cd dnszen
 sudo ./install.sh
 ```
@@ -29,7 +29,7 @@ sudo ./install.sh
 Open PowerShell as **Administrator**:
 
 ```powershell
-git clone https://github.com/your-username/dnszen.git
+git clone https://github.com/mxskeen/dnszen.git
 cd dnszen
 .\install.ps1
 ```

@@ -1068,6 +1068,8 @@ show_menu() {
         echo "  [4] Restart DNSZen Service"
         echo "  [5] View Logs"
         echo "  [6] Revert to Original DNS & Uninstall"
+        echo ""
+        echo -e "  Author GitHub: ${COLOR_CYAN}https://github.com/mxskeen/dnszen/${COLOR_RESET}"
         echo "  [7] Exit"
         echo ""
         read -r -p "Select option [1-7]: " menu_choice
