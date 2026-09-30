@@ -68,6 +68,7 @@ From any terminal window:
 | Action | Linux / macOS | Windows (PowerShell / CMD) |
 |---|---|---|
 | **Open Visual Menu** | `sudo dnszen` | `dnszen` |
+| **Live Query Monitor** | `sudo dnsmonitor` *(or `sudo dnszen monitor`)* | `dnsmonitor` *(or `dnszen monitor`)* |
 | **Change DoH URL** | `sudo dnszen set <url>` | `dnszen set <url>` |
 | **Verify Encryption & Leaks** | `sudo dnszen verify` | `dnszen verify` |
 | **Check Status** | `sudo dnszen status` | `dnszen status` |
@@ -75,6 +76,33 @@ From any terminal window:
 | **Restart Service** | `sudo dnszen restart` | `dnszen restart` |
 | **View Logs** | `sudo dnszen logs` | `Get-ScheduledTask DNSZen` |
 | **Revert to Original DNS** | `sudo dnszen revert` | `dnszen revert` |
+
+---
+
+### Live Query Monitor (`dnsmonitor`)
+
+Inspect live DNS queries passing through your encrypted local proxy in real time:
+
+```bash
+# Linux & macOS
+sudo dnsmonitor
+
+# Windows (PowerShell / CMD)
+dnsmonitor
+```
+
+```text
+  TIME       TYPE   DOMAIN                             STATUS       LATENCY    ANSWER
+  ────────── ────── ────────────────────────────────── ──────────── ────────── ─────────────────────────
+  15:47:36   A      cloudflare.com                     [RESOLVED]   18ms       104.16.133.229, 104.16.132.229
+  15:47:36   A      doubleclick.net                    [BLOCKED]    24ms       0.0.0.0
+  15:47:36   A      cloudflare.com                     [CACHED]     <1ms       104.16.133.229, 104.16.132.229
+  15:47:37   A      analytics.tracker.example          [BLOCKED]    31ms       0.0.0.0
+```
+
+- **Filter & Block Detection:** Instantly flags ad and tracker blocks (`[BLOCKED]`) from your upstream provider (RethinkDNS, NextDNS, AdGuard).
+- **Latency Benchmark:** Measures real round-trip query time for each request.
+- **Cache Optimization:** Shows sub-millisecond local cache hits (`[CACHED]`).
 
 ---
 

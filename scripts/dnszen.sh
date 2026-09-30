@@ -19,6 +19,8 @@ CONFIG_FILE="${CONFIG_DIR}/dnsproxy.yaml"
 STATE_FILE="${CONFIG_DIR}/dnszen.conf"
 DNSPROXY_BIN="${BIN_DIR}/dnsproxy"
 CLI_SYMLINK="/usr/local/bin/dnszen"
+MONITOR_CLI_SYMLINK="/usr/local/bin/dnsmonitor"
+LOG_FILE="/var/log/dnszen.log"
 
 SYSTEMD_SERVICE_FILE="/etc/systemd/system/dnszen.service"
 SYSTEMD_RESOLVED_DROPIN_DIR="/etc/systemd/resolved.conf.d"
@@ -288,10 +290,12 @@ install_cli_symlink() {
     cp "${script_source}" "${INSTALL_DIR}/dnszen"
     chmod 755 "${INSTALL_DIR}/dnszen"
 
-    # Create symlink in /usr/local/bin
+    # Create symlinks in /usr/local/bin
     mkdir -p "$(dirname "${CLI_SYMLINK}")"
     ln -sf "${INSTALL_DIR}/dnszen" "${CLI_SYMLINK}"
+    ln -sf "${INSTALL_DIR}/dnszen" "${MONITOR_CLI_SYMLINK}"
     log_ok "Installed 'dnszen' CLI command to ${CLI_SYMLINK}."
+    log_ok "Installed 'dnsmonitor' CLI command to ${MONITOR_CLI_SYMLINK}."
 }
 
 # ------------------------------------------------------------------------------
@@ -528,8 +532,26 @@ cache-optimistic: true
 upstream-mode: load_balance
 dnssec: false
 timeout: "6s"
+output: "${LOG_FILE}"
+verbose: true
 EOF
     chmod 644 "${CONFIG_FILE}"
+    touch "${LOG_FILE}" 2>/dev/null || true
+    chmod 644 "${LOG_FILE}" 2>/dev/null || true
+
+    # Install logrotate rule if logrotate directory exists
+    if [ -d /etc/logrotate.d ]; then
+        cat <<EOF > /etc/logrotate.d/dnszen
+${LOG_FILE} {
+    size 10M
+    rotate 3
+    compress
+    missingok
+    notifempty
+    copytruncate
+}
+EOF
+    fi
 }
 
 # ------------------------------------------------------------------------------
@@ -1162,10 +1184,13 @@ do_revert() {
         revert_macos_dns
     fi
 
-    # Clean up state and symlink
+    # Clean up state and symlinks
     rm -rf "${CONFIG_DIR}"
     rm -f "${CLI_SYMLINK}"
+    rm -f "${MONITOR_CLI_SYMLINK}"
     rm -rf "${INSTALL_DIR}"
+    rm -f "${LOG_FILE}"
+    rm -f /etc/logrotate.d/dnszen
 
     echo ""
     log_ok "DNSZen has been completely removed."
@@ -1205,6 +1230,237 @@ do_logs() {
 }
 
 # ------------------------------------------------------------------------------
+# Action: Live Query Monitor (dnsmonitor)
+# ------------------------------------------------------------------------------
+do_monitor() {
+    detect_platform
+
+    if [ ! -f "${STATE_FILE}" ] || [ ! -x "${DNSPROXY_BIN}" ]; then
+        log_err "DNSZen is not installed yet. Run 'sudo dnszen' to install."
+        return 1
+    fi
+
+    # Ensure live logging is enabled in dnsproxy configuration
+    local need_restart=0
+    if [ -f "${CONFIG_FILE}" ]; then
+        if ! grep -q "^output:" "${CONFIG_FILE}" 2>/dev/null; then
+            echo "output: \"${LOG_FILE}\"" >> "${CONFIG_FILE}"
+            need_restart=1
+        fi
+        if ! grep -q "^verbose:" "${CONFIG_FILE}" 2>/dev/null; then
+            echo "verbose: true" >> "${CONFIG_FILE}"
+            need_restart=1
+        fi
+    fi
+
+    if [ $need_restart -eq 1 ]; then
+        log_step "Enabling live query logging in ${CONFIG_FILE}..."
+        restart_service
+    fi
+
+    if [ ! -f "${LOG_FILE}" ]; then
+        touch "${LOG_FILE}"
+        chmod 644 "${LOG_FILE}"
+    fi
+
+    # Rotate / truncate if log file exceeds 20MB
+    if [ -f "${LOG_FILE}" ]; then
+        local log_size
+        log_size=$(stat -c%s "${LOG_FILE}" 2>/dev/null || stat -f%z "${LOG_FILE}" 2>/dev/null || echo 0)
+        if [ "$log_size" -gt 20971520 ]; then
+            log_info "Log file exceeds 20MB. Truncating older entries..."
+            local tmp_trunc
+            tmp_trunc=$(mktemp /tmp/dnszen-trunc.XXXXXX)
+            tail -n 5000 "${LOG_FILE}" > "${tmp_trunc}" 2>/dev/null && cp "${tmp_trunc}" "${LOG_FILE}"
+            rm -f "${tmp_trunc}"
+        fi
+    fi
+
+    if command -v python3 >/dev/null 2>&1; then
+        tail -n 25 -F "${LOG_FILE}" | python3 -u -c '
+import sys, re, signal
+
+CLR_RESET   = "\033[0m"
+CLR_BOLD    = "\033[1m"
+CLR_DIM     = "\033[2m"
+CLR_RED     = "\033[1;31m"
+CLR_GREEN   = "\033[1;32m"
+CLR_YELLOW  = "\033[1;33m"
+CLR_BLUE    = "\033[1;34m"
+CLR_CYAN    = "\033[1;36m"
+CLR_WHITE   = "\033[1;37m"
+
+def print_header():
+    sys.stdout.write("\n" + CLR_CYAN + "  ┌────────────────────────────────────────────────────────────────────────┐" + CLR_RESET + "\n")
+    sys.stdout.write(CLR_CYAN + "  │" + CLR_RESET + "   " + CLR_BOLD + "DNSZen Live Query Monitor" + CLR_RESET + " (Ctrl+C to exit)                           " + CLR_CYAN + "│" + CLR_RESET + "\n")
+    sys.stdout.write(CLR_CYAN + "  │" + CLR_RESET + "   " + CLR_DIM + "Streaming real-time DNS queries through local encrypted proxy" + CLR_RESET + "        " + CLR_CYAN + "│" + CLR_RESET + "\n")
+    sys.stdout.write(CLR_CYAN + "  └────────────────────────────────────────────────────────────────────────┘" + CLR_RESET + "\n\n")
+    col_hdr = "  " + CLR_BOLD + "{:<10} {:<6} {:<34} {:<12} {:<10} {}".format("TIME", "TYPE", "DOMAIN", "STATUS", "LATENCY", "ANSWER") + CLR_RESET + "\n"
+    col_div = "  " + CLR_DIM + "{:<10} {:<6} {:<34} {:<12} {:<10} {}".format("─"*10, "─"*6, "─"*34, "─"*12, "─"*10, "─"*25) + CLR_RESET + "\n"
+    sys.stdout.write(col_hdr)
+    sys.stdout.write(col_div)
+    sys.stdout.flush()
+
+def format_duration(dur_str):
+    if not dur_str:
+        return ""
+    m = re.search(r"([0-9.]+)(m?s)", dur_str)
+    if not m:
+        return dur_str
+    val = float(m.group(1))
+    unit = m.group(2)
+    if unit == "s":
+        return str(int(val*1000)) + "ms"
+    elif val < 1:
+        return "<1ms"
+    else:
+        return str(int(round(val))) + "ms"
+
+def emit(ev):
+    if not ev or not ev.get("domain"):
+        return
+    ts = ev.get("time", "")
+    qtype = ev.get("qtype", "A")
+    domain = ev.get("domain", "")
+    status = ev.get("status", "NOERROR")
+    answers = ev.get("answers", [])
+    latency = ev.get("latency", "")
+
+    is_blocked = False
+    for a in answers:
+        if a in ("0.0.0.0", "::", "0.0.0.0/0", "127.0.0.1"):
+            is_blocked = True
+            break
+
+    if is_blocked:
+        tag = "[BLOCKED]"
+        tag_col = CLR_RED + CLR_BOLD + "{:<12}".format(tag) + CLR_RESET
+    elif ev.get("cached"):
+        tag = "[CACHED]"
+        tag_col = CLR_CYAN + "{:<12}".format(tag) + CLR_RESET
+        if not latency:
+            latency = "<1ms"
+    elif status == "NXDOMAIN":
+        tag = "[NXDOMAIN]"
+        tag_col = CLR_YELLOW + "{:<12}".format(tag) + CLR_RESET
+    elif status in ("REFUSED", "SERVFAIL"):
+        tag = "[" + status + "]"
+        tag_col = CLR_RED + "{:<12}".format(tag) + CLR_RESET
+    else:
+        tag = "[RESOLVED]"
+        tag_col = CLR_GREEN + "{:<12}".format(tag) + CLR_RESET
+
+    if not latency:
+        latency = "<1ms" if tag == "[CACHED]" else "—"
+
+    disp_dom = domain if len(domain) <= 34 else domain[:31] + "..."
+    if answers:
+        ans_str = ", ".join(answers)
+    elif tag not in ("[RESOLVED]", "[CACHED]"):
+        ans_str = tag.strip("[]")
+    else:
+        ans_str = "NODATA"
+
+    if len(ans_str) > 42:
+        ans_str = ans_str[:39] + "..."
+
+    row = "  " + CLR_DIM + "{:<10}".format(ts) + CLR_RESET + " " + CLR_BOLD + "{:<6}".format(qtype) + CLR_RESET + " " + "{:<34}".format(disp_dom) + " " + tag_col + " " + "{:<10}".format(latency) + " " + ans_str + "\n"
+    sys.stdout.write(row)
+    sys.stdout.flush()
+
+def main():
+    signal.signal(signal.SIGINT, lambda s, f: sys.exit(0))
+    print_header()
+
+    pending_durations = {}
+    cached_flag = False
+    current_event = None
+
+    try:
+        for raw_line in sys.stdin:
+            line = raw_line.strip()
+            if not line:
+                continue
+
+            # Duration tracking
+            m_dur = re.search(r"duration=([0-9.]+m?s)", line)
+            m_dur_q = re.search(r"question=\";([^\\\s]+)\.\\tIN\\t\s*([A-Za-z0-9]+)\"", line)
+            if m_dur and m_dur_q:
+                qdom = m_dur_q.group(1).lower()
+                qtype = m_dur_q.group(2)
+                pending_durations[(qdom, qtype)] = format_duration(m_dur.group(1))
+
+            if "replying from cache" in line:
+                cached_flag = True
+
+            # Header line: opcode, status, id
+            m_out = re.search(r"(\d{2}:\d{2}:\d{2})\.\d+ DEBUG out prefix=dnsproxy line_num=1 line=\";; opcode: QUERY, status: ([A-Z]+), id: (\d+)\"", line)
+            if m_out:
+                if current_event:
+                    emit(current_event)
+                ts, rcode, qid = m_out.group(1), m_out.group(2), m_out.group(3)
+                current_event = {
+                    "time": ts,
+                    "status": rcode,
+                    "id": qid,
+                    "answers": [],
+                    "cached": cached_flag,
+                    "domain": "",
+                    "qtype": "",
+                    "latency": "",
+                    "expected_answers": None
+                }
+                cached_flag = False
+                continue
+
+            if not current_event:
+                continue
+
+            # Expected answers count
+            m_num = re.search(r"ANSWER: (\d+)", line)
+            if m_num:
+                current_event["expected_answers"] = int(m_num.group(1))
+
+            # Question line
+            m_q = re.search(r"line=\";([^\\\s]+)\.\\tIN\\t\s*([A-Za-z0-9]+)\"", line)
+            if m_q:
+                dom = m_q.group(1)
+                tp = m_q.group(2)
+                current_event["domain"] = dom
+                current_event["qtype"] = tp
+                key = (dom.lower(), tp)
+                if key in pending_durations:
+                    current_event["latency"] = pending_durations.pop(key)
+                if current_event["expected_answers"] == 0:
+                    emit(current_event)
+                    current_event = None
+                continue
+
+            # Answer line
+            m_ans = re.search(r"line=\"[^\\]+\\t\d+\\tIN\\t([A-Za-z0-9]+)\\t([^\"\\s]+)\"", line)
+            if m_ans:
+                ans_val = m_ans.group(2)
+                current_event["answers"].append(ans_val)
+                if current_event["expected_answers"] is not None and len(current_event["answers"]) >= current_event["expected_answers"]:
+                    emit(current_event)
+                    current_event = None
+                continue
+
+        if current_event:
+            emit(current_event)
+    except (KeyboardInterrupt, SystemExit):
+        pass
+
+if __name__ == "__main__":
+    main()
+'
+    else
+        echo -e "${COLOR_CYAN}DNSZen Live Query Log (streaming ${LOG_FILE}):${COLOR_RESET}"
+        tail -n 30 -f "${LOG_FILE}"
+    fi
+}
+
+# ------------------------------------------------------------------------------
 # Interactive Menu
 # ------------------------------------------------------------------------------
 show_menu() {
@@ -1226,15 +1482,16 @@ show_menu() {
         echo "  [1] Change DoH URL"
         echo "  [2] View Status & Live Diagnostics"
         echo "  [3] Verify Security, Encryption & Leak Test"
-        echo "  [4] Test DNS Resolution & Speed"
-        echo "  [5] Restart DNSZen Service"
-        echo "  [6] View Logs"
-        echo "  [7] Revert to Original DNS & Uninstall"
+        echo "  [4] Live Query Monitor (dnsmonitor)"
+        echo "  [5] Test DNS Resolution & Speed"
+        echo "  [6] Restart DNSZen Service"
+        echo "  [7] View Logs"
+        echo "  [8] Revert to Original DNS & Uninstall"
         echo ""
         echo -e "  Author GitHub: ${COLOR_CYAN}https://github.com/mxskeen/dnszen/${COLOR_RESET}"
-        echo "  [8] Exit"
+        echo "  [9] Exit"
         echo ""
-        prompt_read "Select option [1-8]: " menu_choice
+        prompt_read "Select option [1-9]: " menu_choice
 
         case "$menu_choice" in
             1)
@@ -1250,28 +1507,32 @@ show_menu() {
                 prompt_read "Press Enter to return to menu..." _dummy
                 ;;
             4)
+                do_monitor
+                prompt_read "Press Enter to return to menu..." _dummy
+                ;;
+            5)
                 prompt_read "Enter domain to test [default: cloudflare.com]: " test_dom
                 test_dom="${test_dom:-cloudflare.com}"
                 run_live_test "$test_dom"
                 prompt_read "Press Enter to return to menu..." _dummy
                 ;;
-            5)
+            6)
                 restart_service
                 prompt_read "Press Enter to return to menu..." _dummy
                 ;;
-            6)
+            7)
                 do_logs
                 prompt_read "Press Enter to return to menu..." _dummy
                 ;;
-            7)
+            8)
                 do_revert
                 exit 0
                 ;;
-            8|q|Q)
+            9|q|Q)
                 exit 0
                 ;;
             *)
-                log_warn "Invalid selection. Please choose 1-8."
+                log_warn "Invalid selection. Please choose 1-9."
                 sleep 1
                 ;;
         esac
@@ -1289,10 +1550,12 @@ main() {
             echo "DNSZen - Custom DNS-over-HTTPS for Desktop (v${VERSION})"
             echo ""
             echo "Usage: sudo dnszen [command]"
+            echo "       sudo dnsmonitor"
             echo ""
             echo "Commands:"
             echo "  (no args)             Open interactive menu (or run initial setup)"
             echo "  install               Run initial installation & configuration"
+            echo "  monitor, watch        Stream real-time DNS queries (dnsmonitor)"
             echo "  set <url>             Update upstream DoH URL"
             echo "  verify, leak-test     Verify encrypted DoH transport and leak-free status"
             echo "  status                Display current service status and health"
@@ -1310,11 +1573,23 @@ main() {
             ;;
     esac
 
+    # Support direct invocation as dnsmonitor
+    local script_name
+    script_name="$(basename "$0")"
+    if [ "$script_name" = "dnsmonitor" ]; then
+        check_root
+        do_monitor "$@"
+        return 0
+    fi
+
     check_root
 
     case "$cmd" in
         install)
             do_install
+            ;;
+        monitor|watch|live)
+            do_monitor
             ;;
         set)
             shift
