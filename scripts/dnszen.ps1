@@ -29,6 +29,7 @@ function Show-Banner {
     Write-Host "  ===============================================================" -ForegroundColor Cyan
     Write-Host "             DNSZen for Windows - Custom DNS-over-HTTPS           " -ForegroundColor Cyan
     Write-Host "                  System-Wide * Persistent * Fast                " -ForegroundColor Cyan
+    Write-Host "                           by @mxskeen                           " -ForegroundColor DarkCyan
     Write-Host "  ===============================================================" -ForegroundColor Cyan
     Write-Host ""
 }

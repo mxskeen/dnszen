@@ -72,6 +72,7 @@ show_banner() {
     echo "  ║                                                               ║"
     echo "  ║           Custom DNS-over-HTTPS (DoH) for Desktop             ║"
     echo "  ║                System-Wide • Persistent • Fast                ║"
+    echo "  ║                          by @mxskeen                          ║"
     echo "  ╚═══════════════════════════════════════════════════════════════╝"
     echo -e "${COLOR_RESET}"
 }
