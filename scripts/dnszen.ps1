@@ -271,8 +271,49 @@ function Revert-SystemDNS {
     Write-Host "[OK] Original system DNS settings restored completely." -ForegroundColor Green
 }
 
+function Test-PortConflict {
+    Write-Host "[>] Checking for port 53 listener conflicts..." -ForegroundColor Cyan
+
+    try {
+        $conns = Get-NetTCPConnection -LocalPort 53 -ErrorAction SilentlyContinue
+        if (-not $conns) {
+            $conns = Get-NetUDPEndpoint -LocalPort 53 -ErrorAction SilentlyContinue
+        }
+
+        foreach ($c in $conns) {
+            $ownerPid = $c.OwningProcess
+            if ($ownerPid -and $ownerPid -ne 0) {
+                $proc = Get-Process -Id $ownerPid -ErrorAction SilentlyContinue
+                if ($proc -and $proc.ProcessName -ne "dnsproxy") {
+                    Write-Host ""
+                    Write-Warning "Port 53 conflict detected!"
+                    Write-Host "  Another DNS resolver is already bound to port 53:"
+                    Write-Host "  * Process: $($proc.ProcessName)" -ForegroundColor Red
+                    Write-Host "  * PID:     $($proc.Id)"
+                    Write-Host ""
+                    Write-Host "Options:"
+                    Write-Host "  [1] Stop conflicting process and continue setup"
+                    Write-Host "  [2] Abort setup (inspect manually)"
+                    $opt = Read-Host "Select [1-2]"
+                    if ($opt -eq "1") {
+                        Stop-Process -Id $ownerPid -Force -ErrorAction SilentlyContinue
+                        Write-Host "[OK] Port 53 released for DNSZen." -ForegroundColor Green
+                    } else {
+                        Write-Host "Installation cancelled by user."
+                        Exit
+                    }
+                    break
+                }
+            }
+        }
+    } catch {}
+
+    Write-Host "[OK] Port 53 is available." -ForegroundColor Green
+}
+
 function Invoke-Install {
     Show-Banner
+    Test-PortConflict
     Install-Dnsproxy
     $url = Prompt-DoHUrl
     Write-ProxyConfig $url

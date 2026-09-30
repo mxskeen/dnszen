@@ -1017,12 +1017,99 @@ do_verify() {
 }
 
 # ------------------------------------------------------------------------------
+# Port 53 Conflict Detection
+# ------------------------------------------------------------------------------
+check_port_conflicts() {
+    log_step "Checking for port 53 listener conflicts..."
+
+    local conflict_pid=""
+    local conflict_name=""
+
+    # Check who is listening on 127.0.0.1:53, 0.0.0.0:53, or :::53
+    # Note: 127.0.0.53:53 (systemd-resolved) is intentionally ignored as it binds separately
+    if command -v ss >/dev/null 2>&1; then
+        local raw_line
+        raw_line=$(ss -tulpn 2>/dev/null | grep -E '(127\.0\.0\.1|0\.0\.0\.0|::|\[::\]):53\b' | grep -v 'dnsproxy' | head -n 1 || true)
+        if [ -n "$raw_line" ]; then
+            conflict_pid=$(echo "$raw_line" | grep -o 'pid=[0-9]*' | head -n 1 | cut -d '=' -f 2 || true)
+            conflict_name=$(echo "$raw_line" | grep -o 'users:(("[^"]*"' | head -n 1 | cut -d '"' -f 2 || true)
+        fi
+    fi
+
+    if [ -z "$conflict_name" ] && command -v lsof >/dev/null 2>&1; then
+        local lsof_line
+        lsof_line=$(lsof -iUDP:53 -iTCP:53 -n -P 2>/dev/null | grep -E '(127\.0\.0\.1|0\.0\.0\.0|\*):53' | grep -v 'dnsproxy' | head -n 1 || true)
+        if [ -n "$lsof_line" ]; then
+            conflict_name=$(echo "$lsof_line" | awk '{print $1}')
+            conflict_pid=$(echo "$lsof_line" | awk '{print $2}')
+        fi
+    fi
+
+    if [ -z "$conflict_name" ] && [ -n "$conflict_pid" ] && [ -d "/proc/${conflict_pid}" ]; then
+        conflict_name=$(cat "/proc/${conflict_pid}/comm" 2>/dev/null || true)
+    fi
+
+    # Filter out our own dnsproxy if upgrading or reinstalling
+    if [ "$conflict_name" = "dnsproxy" ]; then
+        conflict_name=""
+        conflict_pid=""
+    fi
+
+    if [ -n "$conflict_name" ] || [ -n "$conflict_pid" ]; then
+        conflict_name="${conflict_name:-Unknown DNS daemon}"
+        echo ""
+        log_warn "Port 53 conflict detected!"
+        echo -e "  Another DNS resolver is already bound to port 53:"
+        echo -e "  • ${COLOR_BOLD}Process:${COLOR_RESET} ${COLOR_RED}${conflict_name}${COLOR_RESET}"
+        [ -n "$conflict_pid" ] && echo -e "  • ${COLOR_BOLD}PID:${COLOR_RESET}     ${conflict_pid}"
+        echo ""
+        echo "Options:"
+        echo "  [1] Stop conflicting process/service and continue setup"
+        echo "  [2] Abort setup (inspect manually)"
+        echo ""
+
+        local resolve_choice
+        prompt_read "Select option [1-2]: " resolve_choice
+
+        case "$resolve_choice" in
+            1)
+                log_step "Attempting to release port 53..."
+                if [ -n "$conflict_name" ] && command -v systemctl >/dev/null 2>&1; then
+                    for svc in "$conflict_name" "${conflict_name}.service" dnsmasq named bind9 cloudflared dnscrypt-proxy pihole-FTL stubby; do
+                        if systemctl is-active --quiet "$svc" 2>/dev/null; then
+                            systemctl stop "$svc" 2>/dev/null || true
+                            log_info "Stopped active service: $svc"
+                        fi
+                    done
+                fi
+
+                if [ -n "$conflict_pid" ]; then
+                    kill "$conflict_pid" 2>/dev/null || true
+                    sleep 0.5
+                    kill -9 "$conflict_pid" 2>/dev/null || true
+                fi
+
+                sleep 1
+                log_ok "Port 53 is now released for DNSZen."
+                ;;
+            *)
+                log_info "Installation aborted by user to resolve port conflict manually."
+                exit 0
+                ;;
+        esac
+    else
+        log_ok "Port 53 is available."
+    fi
+}
+
+# ------------------------------------------------------------------------------
 # Action: Install / Setup
 # ------------------------------------------------------------------------------
 do_install() {
     show_banner
     detect_platform
     ensure_dependencies
+    check_port_conflicts
     install_dnsproxy_binary
     install_cli_symlink
 
