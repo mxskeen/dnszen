@@ -913,7 +913,7 @@ do_install() {
 
     echo ""
     echo -e "${COLOR_GREEN}═══════════════════════════════════════════════════════════════${COLOR_RESET}"
-    echo -e "${COLOR_BOLD}${COLOR_GREEN}  🎉 DNSZen is installed and running system-wide!${COLOR_RESET}"
+    echo -e "${COLOR_BOLD}${COLOR_GREEN}  DNSZen is installed and running system-wide.${COLOR_RESET}"
     echo -e "${COLOR_GREEN}═══════════════════════════════════════════════════════════════${COLOR_RESET}"
     echo -e "  • ${COLOR_BOLD}Upstream DoH:${COLOR_RESET}   ${COLOR_CYAN}${SELECTED_DOH_URL}${COLOR_RESET}"
     echo -e "  • ${COLOR_BOLD}Listening on:${COLOR_RESET}   127.0.0.1:53"
@@ -1150,7 +1150,6 @@ show_menu() {
                 exit 0
                 ;;
             7|q|Q)
-                echo "Goodbye!"
                 exit 0
                 ;;
             *)
