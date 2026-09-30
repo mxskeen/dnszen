@@ -2,6 +2,9 @@
 
 System-wide custom DNS-over-HTTPS (DoH) for Linux, macOS, and Windows. Similar to Android's "Private DNS", but for desktop.
 
+<img width="697" height="520" alt="image" src="https://github.com/user-attachments/assets/ed3d5b2e-6d14-4e85-97fe-76b1888fd205" />
+
+
 ---
 
 ## Why System-Wide?
