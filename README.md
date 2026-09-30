@@ -21,7 +21,7 @@ System-wide custom DNS-over-HTTPS (DoH) for Linux, macOS, and Windows. Similar t
 ```bash
 git clone https://github.com/your-username/dnszen.git
 cd dnszen
-sudo ./dnszen.sh
+sudo ./install.sh
 ```
 
 ### Windows
@@ -31,9 +31,9 @@ Open PowerShell as **Administrator**:
 ```powershell
 git clone https://github.com/your-username/dnszen.git
 cd dnszen
-.\dnszen.ps1
+.\install.ps1
 ```
-*(If using Git Bash, running `./dnszen.sh` will auto-launch the PowerShell installer).*
+*(If using Git Bash, running `./install.sh` will auto-launch the PowerShell installer).*
 
 ---
 
