@@ -22,6 +22,7 @@ $ConfigFile = "$InstallDir\dnsproxy.yaml"
 $StateFile = "$InstallDir\dnszen.json"
 $BackupFile = "$InstallDir\backup_dns.clixml"
 $DnsproxyExe = "$BinDir\dnsproxy.exe"
+$LogFile = "$InstallDir\dnszen.log"
 $TaskName = "DNSZen"
 
 function Show-Banner {
@@ -200,6 +201,8 @@ cache-optimistic: true
 upstream-mode: load_balance
 dnssec: false
 timeout: "6s"
+output: "$LogFile"
+verbose: true
 "@
     Set-Content -Path $ConfigFile -Value $yaml -Encoding UTF8
 }
@@ -261,6 +264,8 @@ function Revert-SystemDNS {
     }
 
     Clear-DnsClientCache
+    Remove-Item -Path "C:\Windows\dnszen.cmd" -Force -ErrorAction SilentlyContinue
+    Remove-Item -Path "C:\Windows\dnsmonitor.cmd" -Force -ErrorAction SilentlyContinue
     Remove-Item -Path $InstallDir -Recurse -Force -ErrorAction SilentlyContinue
 
     Write-Host "[OK] Original system DNS settings restored completely." -ForegroundColor Green
@@ -281,13 +286,19 @@ function Invoke-Install {
     }
     $state | ConvertTo-Json | Set-Content $StateFile -Encoding UTF8
 
-    # Create global CLI wrapper in C:\Windows\dnszen.cmd
+    # Create global CLI wrappers in C:\Windows\dnszen.cmd and C:\Windows\dnsmonitor.cmd
     Copy-Item $MyInvocation.MyCommand.Path -Destination "$InstallDir\dnszen.ps1" -Force -ErrorAction SilentlyContinue
     $cmdWrapper = @"
 @echo off
 powershell.exe -ExecutionPolicy Bypass -NoProfile -File "$InstallDir\dnszen.ps1" %*
 "@
     Set-Content -Path "C:\Windows\dnszen.cmd" -Value $cmdWrapper -Encoding ASCII -Force -ErrorAction SilentlyContinue
+
+    $monitorWrapper = @"
+@echo off
+powershell.exe -ExecutionPolicy Bypass -NoProfile -File "$InstallDir\dnszen.ps1" monitor %*
+"@
+    Set-Content -Path "C:\Windows\dnsmonitor.cmd" -Value $monitorWrapper -Encoding ASCII -Force -ErrorAction SilentlyContinue
 
     Start-Sleep -Seconds 2
     Write-Host ""
@@ -297,7 +308,7 @@ powershell.exe -ExecutionPolicy Bypass -NoProfile -File "$InstallDir\dnszen.ps1"
     Write-Host "  * Upstream DoH: $url" -ForegroundColor Cyan
     Write-Host "  * Primary DNS:  127.0.0.1:53"
     Write-Host "  * Task:         Runs at system startup under SYSTEM"
-    Write-Host "  * CLI Access:   Type 'dnszen' in any terminal window" -ForegroundColor Yellow
+    Write-Host "  * CLI Access:   Type 'dnszen' or 'dnsmonitor' in any terminal" -ForegroundColor Yellow
     Write-Host ""
 }
 
@@ -376,6 +387,146 @@ function Test-DnsZenSecurity {
     Write-Host ""
 }
 
+function Emit-QueryRow($ev) {
+    if (-not $ev.Domain) { return }
+    $dispDom = if ($ev.Domain.Length -gt 34) { $ev.Domain.Substring(0, 31) + "..." } else { $ev.Domain }
+
+    $isBlocked = $false
+    foreach ($ans in $ev.Answers) {
+        if ($ans -in @("0.0.0.0", "::", "127.0.0.1", "0.0.0.0/0")) {
+            $isBlocked = $true
+            break
+        }
+    }
+
+    $statusCol = "Green"
+    $tag = "[RESOLVED]"
+    if ($isBlocked) {
+        $tag = "[BLOCKED]"
+        $statusCol = "Red"
+    } elseif ($ev.Cached) {
+        $tag = "[CACHED]"
+        $statusCol = "Cyan"
+        if (-not $ev.Latency) { $ev.Latency = "<1ms" }
+    } elseif ($ev.Status -eq "NXDOMAIN") {
+        $tag = "[NXDOMAIN]"
+        $statusCol = "Yellow"
+    } elseif ($ev.Status -in @("REFUSED", "SERVFAIL")) {
+        $tag = "[$($ev.Status)]"
+        $statusCol = "Red"
+    }
+
+    if (-not $ev.Latency) {
+        $ev.Latency = if ($tag -eq "[CACHED]") { "<1ms" } else { "-" }
+    }
+
+    $ansStr = if ($ev.Answers.Count -gt 0) { $ev.Answers -join ", " } else { if ($tag -in @("[RESOLVED]","[CACHED]")) { "NODATA" } else { $tag.Trim("[]") } }
+    if ($ansStr.Length -gt 40) { $ansStr = $ansStr.Substring(0, 37) + "..." }
+
+    Write-Host ("  {0,-10} {1,-6} {2,-34} " -f $ev.Time, $ev.Type, $dispDom) -NoNewline -ForegroundColor Gray
+    Write-Host ("{0,-12} " -f $tag) -NoNewline -ForegroundColor $statusCol
+    Write-Host ("{0,-10} {1}" -f $ev.Latency, $ansStr)
+}
+
+function Show-LiveMonitor {
+    Write-Host ""
+    Write-Host "  ===============================================================" -ForegroundColor Cyan
+    Write-Host "             DNSZen Live Query Monitor (Ctrl+C to exit)          " -ForegroundColor Cyan
+    Write-Host "  ===============================================================" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host ("  {0,-10} {1,-6} {2,-34} {3,-12} {4,-10} {5}" -f "TIME", "TYPE", "DOMAIN", "STATUS", "LATENCY", "ANSWER") -ForegroundColor White
+    Write-Host ("  {0} {1} {2} {3} {4} {5}" -f ("-"*10), ("-"*6), ("-"*34), ("-"*12), ("-"*10), ("-"*25)) -ForegroundColor DarkGray
+
+    if (-not (Test-Path $LogFile)) {
+        New-Item -ItemType File -Path $LogFile -Force | Out-Null
+    }
+
+    # Ensure proxy config has logging enabled
+    if (Test-Path $ConfigFile) {
+        $cfg = Get-Content $ConfigFile -Raw
+        if ($cfg -notmatch "output:") {
+            Add-Content -Path $ConfigFile -Value "`noutput: `"$LogFile`"`nverbose: true"
+            Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+            Start-ScheduledTask -TaskName $TaskName
+        }
+    }
+
+    $pendingDurations = @{}
+    $cachedFlag = $false
+    $currentEvent = $null
+
+    try {
+        Get-Content -Path $LogFile -Tail 30 -Wait | ForEach-Object {
+            $line = $_.Trim()
+            if (-not $line) { return }
+
+            if ($line -match 'duration=([0-9.]+m?s)') {
+                $durVal = $matches[1]
+                if ($line -match 'question=";([^\\\s]+)\.\\tIN\\t\s*([A-Za-z0-9]+)"') {
+                    $qdom = $matches[1].ToLower()
+                    $qtype = $matches[2]
+                    $pendingDurations["$qdom:$qtype"] = $durVal
+                }
+            }
+
+            if ($line -match "replying from cache") {
+                $cachedFlag = $true
+            }
+
+            if ($line -match '(\d{2}:\d{2}:\d{2})\.\d+ DEBUG out prefix=dnsproxy line_num=1 line=";; opcode: QUERY, status: ([A-Z]+), id: (\d+)"') {
+                $ts = $matches[1]
+                $status = $matches[2]
+                $qid = $matches[3]
+                $currentEvent = @{
+                    Time = $ts
+                    Status = $status
+                    Id = $qid
+                    Domain = ""
+                    Type = ""
+                    Answers = [System.Collections.Generic.List[string]]::new()
+                    Cached = $cachedFlag
+                    Latency = ""
+                    Expected = -1
+                }
+                $cachedFlag = $false
+                return
+            }
+
+            if (-not $currentEvent) { return }
+
+            if ($line -match 'ANSWER: (\d+)') {
+                $currentEvent.Expected = [int]$matches[1]
+            }
+
+            if ($line -match 'line=";([^\\\s]+)\.\\tIN\\t\s*([A-Za-z0-9]+)"') {
+                $currentEvent.Domain = $matches[1]
+                $currentEvent.Type = $matches[2]
+                $key = "$($currentEvent.Domain.ToLower()):$($currentEvent.Type)"
+                if ($pendingDurations.ContainsKey($key)) {
+                    $currentEvent.Latency = $pendingDurations[$key]
+                    $pendingDurations.Remove($key)
+                }
+                if ($currentEvent.Expected -eq 0) {
+                    Emit-QueryRow $currentEvent
+                    $currentEvent = $null
+                }
+                return
+            }
+
+            if ($line -match 'line="[^\\]+\\t\d+\\tIN\\t([A-Za-z0-9]+)\\t([^"]+)"') {
+                $currentEvent.Answers.Add($matches[2])
+                if ($currentEvent.Expected -ge 0 -and $currentEvent.Answers.Count -ge $currentEvent.Expected) {
+                    Emit-QueryRow $currentEvent
+                    $currentEvent = $null
+                }
+                return
+            }
+        }
+    } catch {
+        # Graceful exit on interrupt
+    }
+}
+
 function Show-Menu {
     while ($true) {
         Show-Banner
@@ -392,14 +543,15 @@ function Show-Menu {
         Write-Host "  [1] Change DoH URL"
         Write-Host "  [2] View Status & Live Diagnostics"
         Write-Host "  [3] Verify Security, Encryption & Leak Test"
-        Write-Host "  [4] Test DNS Resolution & Speed"
-        Write-Host "  [5] Restart DNSZen Service"
-        Write-Host "  [6] Revert to Original DNS & Uninstall"
+        Write-Host "  [4] Live Query Monitor (dnsmonitor)"
+        Write-Host "  [5] Test DNS Resolution & Speed"
+        Write-Host "  [6] Restart DNSZen Service"
+        Write-Host "  [7] Revert to Original DNS & Uninstall"
         Write-Host ""
         Write-Host "  Author GitHub: https://github.com/mxskeen/dnszen/" -ForegroundColor Cyan
-        Write-Host "  [7] Exit"
+        Write-Host "  [8] Exit"
         Write-Host ""
-        $choice = Read-Host "Select option [1-7]"
+        $choice = Read-Host "Select option [1-8]"
         switch ($choice) {
             "1" {
                 $newUrl = Prompt-DoHUrl
@@ -421,25 +573,29 @@ function Show-Menu {
                 Read-Host "Press Enter to return to menu..."
             }
             "4" {
+                Show-LiveMonitor
+                Read-Host "Press Enter to return to menu..."
+            }
+            "5" {
                 $dom = Read-Host "Enter domain to test [default: cloudflare.com]"
                 if (-not $dom) { $dom = "cloudflare.com" }
                 Resolve-DnsName -Name $dom -Server "127.0.0.1"
                 Read-Host "Press Enter to return to menu..."
             }
-            "5" {
+            "6" {
                 Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
                 Start-ScheduledTask -TaskName $TaskName
                 Write-Host "[OK] DNSZen service restarted." -ForegroundColor Green
                 Read-Host "Press Enter to return to menu..."
             }
-            "6" {
+            "7" {
                 $confirm = Read-Host "Are you sure you want to revert to original DNS? [y/N]"
                 if ($confirm -match "^[yY]") {
                     Revert-SystemDNS
                     Exit
                 }
             }
-            "7" {
+            "8" {
                 Exit
             }
         }
@@ -452,6 +608,15 @@ Elevate-Privileges
 switch ($Command.ToLower()) {
     "install" {
         Invoke-Install
+    }
+    "monitor" {
+        Show-LiveMonitor
+    }
+    "dnsmonitor" {
+        Show-LiveMonitor
+    }
+    "watch" {
+        Show-LiveMonitor
     }
     "set" {
         $targetUrl = $Arg
