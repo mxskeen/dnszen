@@ -15,11 +15,13 @@ param(
 $ErrorActionPreference = "Stop"
 
 $Version = "1.0.0"
+$RepoRaw = "https://raw.githubusercontent.com/mxskeen/dnszen/master"
 $DefaultDnsproxyVer = "v0.85.0"
 $InstallDir = "$env:ProgramData\dnszen"
 $BinDir = "$InstallDir\bin"
 $ConfigFile = "$InstallDir\dnsproxy.yaml"
 $StateFile = "$InstallDir\dnszen.json"
+$UpdateCheckFile = "$InstallDir\update_check.json"
 $BackupFile = "$InstallDir\backup_dns.clixml"
 $DnsproxyExe = "$BinDir\dnsproxy.exe"
 $LogFile = "$InstallDir\dnszen.log"
@@ -148,35 +150,97 @@ function Verify-DoHUrl([string]$url) {
     return $verified
 }
 
+function Resolve-PresetUrl([string]$raw) {
+    if (-not $raw) { return "" }
+    $key = $raw.ToLower().Trim()
+    switch ($key) {
+        "1"                   { return "https://dns.adguard-dns.com/dns-query" }
+        "adguard"             { return "https://dns.adguard-dns.com/dns-query" }
+        "adguard-dns"         { return "https://dns.adguard-dns.com/dns-query" }
+        "2"                   { return "https://security.cloudflare-dns.com/dns-query" }
+        "cloudflare-security" { return "https://security.cloudflare-dns.com/dns-query" }
+        "cf-sec"              { return "https://security.cloudflare-dns.com/dns-query" }
+        "security"            { return "https://security.cloudflare-dns.com/dns-query" }
+        "1.1.1.2"             { return "https://security.cloudflare-dns.com/dns-query" }
+        "3"                   { return "https://dns.quad9.net/dns-query" }
+        "quad9"               { return "https://dns.quad9.net/dns-query" }
+        "9.9.9.9"             { return "https://dns.quad9.net/dns-query" }
+        "4"                   { return "https://adblock.doh.mullvad.net/dns-query" }
+        "mullvad"             { return "https://adblock.doh.mullvad.net/dns-query" }
+        "mullvad-adblock"     { return "https://adblock.doh.mullvad.net/dns-query" }
+        "5"                   { return "https://cloudflare-dns.com/dns-query" }
+        "cloudflare"          { return "https://cloudflare-dns.com/dns-query" }
+        "cloudflare-standard" { return "https://cloudflare-dns.com/dns-query" }
+        "1.1.1.1"             { return "https://cloudflare-dns.com/dns-query" }
+        Default               { return "" }
+    }
+}
+
 function Prompt-DoHUrl {
+    $currentUrl = ""
+    if (Test-Path $StateFile) {
+        $st = Get-Content $StateFile | ConvertFrom-Json
+        $currentUrl = $st.DOH_URL
+    }
+
     Write-Host ""
-    Write-Host "Enter your Custom DNS-over-HTTPS (DoH) URL:" -ForegroundColor White
-    Write-Host "Examples:" -ForegroundColor DarkGray
-    Write-Host "  * NextDNS:    https://dns.nextdns.io/xxxxxx" -ForegroundColor Cyan
-    Write-Host "  * AdGuard:    https://dns.adguard-dns.com/dns-query" -ForegroundColor Cyan
-    Write-Host "  * Cloudflare: https://cloudflare-dns.com/dns-query" -ForegroundColor Cyan
-    Write-Host "  * Self-host:  https://yourdomain.com/dns-query" -ForegroundColor Cyan
+    Write-Host "Select a DNS-over-HTTPS (DoH) Provider:" -ForegroundColor White
+    Write-Host ""
+    Write-Host "  Popular Privacy Presets (No account required):" -ForegroundColor Cyan
+    Write-Host "  [1] AdGuard DNS          (DoH + Ad & Tracker Blocking)" -ForegroundColor Gray
+    Write-Host "  [2] Cloudflare Security  (1.1.1.2 - Malware & Threat Protection)" -ForegroundColor Gray
+    Write-Host "  [3] Quad9                (9.9.9.9 - Swiss Privacy & Threat Protection)" -ForegroundColor Gray
+    Write-Host "  [4] Mullvad DNS          (Strict Zero-Log Privacy + Ad Blocking)" -ForegroundColor Gray
+    Write-Host "  [5] Cloudflare Standard  (1.1.1.1 - Ultra-Fast Clean DoH)" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  Custom Endpoint:" -ForegroundColor Cyan
+    Write-Host "  [6] Enter Custom DoH URL (NextDNS, ControlD, Pi-hole, Self-Hosted)" -ForegroundColor Gray
     Write-Host ""
 
     while ($true) {
-        $inputUrl = Read-Host "DoH URL"
-        if ([string]::IsNullOrWhiteSpace($inputUrl)) {
-            Write-Warning "URL cannot be empty."
-            continue
+        $promptStr = if ($currentUrl) { "Select option [1-6] [current: $currentUrl]" } else { "Select option [1-6]" }
+        $choice = Read-Host $promptStr
+
+        if ([string]::IsNullOrWhiteSpace($choice) -and $currentUrl) {
+            return $currentUrl
         }
 
-        $sanitized = Sanitize-Url $inputUrl
-        if (Verify-DoHUrl $sanitized) {
-            return $sanitized
-        } else {
+        $presetMatch = Resolve-PresetUrl $choice
+        if ($presetMatch) {
+            if (Verify-DoHUrl $presetMatch) {
+                return $presetMatch
+            }
+        } elseif ($choice -eq "6" -or $choice -eq "c" -or $choice -eq "custom") {
             Write-Host ""
-            Write-Host "Verification failed. Options:" -ForegroundColor Yellow
-            Write-Host "  [1] Re-enter another URL (Recommended)"
-            Write-Host "  [2] Use this URL anyway"
-            Write-Host "  [3] Cancel"
-            $opt = Read-Host "Select [1-3]"
-            if ($opt -eq "2") { return $sanitized }
-            if ($opt -eq "3") { Exit }
+            Write-Host "Enter your Custom DoH URL:" -ForegroundColor White
+            Write-Host "  Examples: NextDNS: https://dns.nextdns.io/xxxxxx" -ForegroundColor DarkGray
+            Write-Host "            ControlD: https://dns.controld.com/xxxxxx" -ForegroundColor DarkGray
+            Write-Host "            Self-host: https://yourdomain.com/dns-query" -ForegroundColor DarkGray
+            $inputUrl = Read-Host "DoH URL"
+            if ([string]::IsNullOrWhiteSpace($inputUrl)) {
+                Write-Warning "URL cannot be empty."
+                continue
+            }
+            $clean = Sanitize-Url $inputUrl
+            if (Verify-DoHUrl $clean) {
+                return $clean
+            } else {
+                Write-Host ""
+                Write-Host "Verification failed. Options:" -ForegroundColor Yellow
+                Write-Host "  [1] Re-enter another URL (Recommended)"
+                Write-Host "  [2] Use this URL anyway"
+                Write-Host "  [3] Return to preset selection"
+                $opt = Read-Host "Select [1-3]"
+                if ($opt -eq "2") { return $clean }
+                if ($opt -eq "3") { continue }
+            }
+        } elseif ($choice -match "^https?://" -or $choice -match "\.") {
+            $clean = Sanitize-Url $choice
+            if (Verify-DoHUrl $clean) {
+                return $clean
+            }
+        } else {
+            Write-Warning "Invalid selection. Please choose 1-6 or enter a DoH URL."
         }
     }
 }
@@ -354,6 +418,7 @@ powershell.exe -ExecutionPolicy Bypass -NoProfile -File "$InstallDir\dnszen.ps1"
 }
 
 function Show-Status {
+    Show-UpdateNotification
     if (Test-Path $StateFile) {
         $st = Get-Content $StateFile | ConvertFrom-Json
         Write-Host ""
@@ -366,6 +431,131 @@ function Show-Status {
     } else {
         Write-Host "DNSZen Status: NOT INSTALLED" -ForegroundColor Red
     }
+}
+
+function Test-UpdateAvailable {
+    if (-not (Test-Path $StateFile)) { return $null }
+
+    $cachedVer = ""
+    $lastCheck = [DateTime]::MinValue
+
+    if (Test-Path $UpdateCheckFile) {
+        try {
+            $cached = Get-Content $UpdateCheckFile -Raw | ConvertFrom-Json
+            $cachedVer = $cached.LatestVersion
+            $lastCheck = [DateTime]::Parse($cached.CheckedAt)
+        } catch {}
+    }
+
+    $now = Get-Date
+    if (-not $cachedVer -or ($now - $lastCheck).TotalHours -ge 24) {
+        try {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+            $req = [System.Net.WebRequest]::Create("$RepoRaw/scripts/dnszen.ps1")
+            $req.Timeout = 2000
+            $resp = $req.GetResponse()
+            $stream = $resp.GetResponseStream()
+            $reader = New-Object System.IO.StreamReader($stream)
+            $remoteScript = $reader.ReadToEnd()
+            $reader.Close()
+            $resp.Close()
+
+            if ($remoteScript -match '\$Version\s*=\s*"([^"]+)"') {
+                $cachedVer = $Matches[1]
+                $cacheObj = @{
+                    LatestVersion = $cachedVer
+                    CheckedAt = $now.ToString("o")
+                }
+                $cacheObj | ConvertTo-Json | Set-Content $UpdateCheckFile -Encoding UTF8
+            }
+        } catch {}
+    }
+
+    if ($cachedVer -and [System.Version]::TryParse($cachedVer, [ref]$null) -and [System.Version]::TryParse($Version, [ref]$null)) {
+        if ([System.Version]$cachedVer -gt [System.Version]$Version) {
+            return $cachedVer
+        }
+    }
+    return $null
+}
+
+function Show-UpdateNotification {
+    $remoteVer = Test-UpdateAvailable
+    if ($remoteVer) {
+        Write-Host "  +-------------------------------------------------------------+" -ForegroundColor Yellow
+        Write-Host "  |  Update Available! v$Version -> v$remoteVer                           |" -ForegroundColor Yellow
+        Write-Host "  |  Run 'dnszen update' to install the latest features.         |" -ForegroundColor Yellow
+        Write-Host "  +-------------------------------------------------------------+" -ForegroundColor Yellow
+        Write-Host ""
+    }
+}
+
+function Invoke-Update([switch]$Force) {
+    Show-Banner
+    Write-Host "[>] Checking for DNSZen updates..." -ForegroundColor Cyan
+
+    $remoteVer = $null
+    $remoteScript = ""
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+        $remoteScript = (New-Object System.Net.WebClient).DownloadString("$RepoRaw/scripts/dnszen.ps1")
+        if ($remoteScript -match '\$Version\s*=\s*"([^"]+)"') {
+            $remoteVer = $Matches[1]
+        }
+    } catch {
+        Write-Warning "Failed to download update from GitHub. Check your internet connection."
+        return
+    }
+
+    if (-not $remoteVer) {
+        Write-Warning "Could not determine remote DNSZen version."
+        return
+    }
+
+    if (-not $Force -and [System.Version]::TryParse($remoteVer, [ref]$null) -and [System.Version]::TryParse($Version, [ref]$null)) {
+        if ([System.Version]$remoteVer -le [System.Version]$Version) {
+            Write-Host "[OK] DNSZen is already up to date (v$Version)." -ForegroundColor Green
+            return
+        }
+    }
+
+    Write-Host "[>] Updating DNSZen to v$remoteVer..." -ForegroundColor Cyan
+
+    # Overwrite dnszen.ps1 in InstallDir
+    $destScript = "$InstallDir\dnszen.ps1"
+    Set-Content -Path $destScript -Value $remoteScript -Encoding UTF8
+
+    # Re-create global cmd wrappers in C:\Windows
+    $cmdWrapper = @"
+@echo off
+powershell.exe -ExecutionPolicy Bypass -NoProfile -File "$InstallDir\dnszen.ps1" %*
+"@
+    Set-Content -Path "C:\Windows\dnszen.cmd" -Value $cmdWrapper -Encoding ASCII -Force -ErrorAction SilentlyContinue
+
+    $monitorWrapper = @"
+@echo off
+powershell.exe -ExecutionPolicy Bypass -NoProfile -File "$InstallDir\dnszen.ps1" monitor %*
+"@
+    Set-Content -Path "C:\Windows\dnsmonitor.cmd" -Value $monitorWrapper -Encoding ASCII -Force -ErrorAction SilentlyContinue
+
+    # Update state file
+    if (Test-Path $StateFile) {
+        $st = Get-Content $StateFile | ConvertFrom-Json
+        $st.Version = $remoteVer
+        $st | ConvertTo-Json | Set-Content $StateFile -Encoding UTF8
+    }
+
+    # Restart background scheduled task
+    Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    Start-ScheduledTask -TaskName $TaskName
+
+    Write-Host ""
+    Write-Host "===============================================================" -ForegroundColor Green
+    Write-Host "  * DNSZen successfully updated to v$remoteVer!" -ForegroundColor Green
+    Write-Host "===============================================================" -ForegroundColor Green
+    Write-Host ""
+    Resolve-DnsName -Name "cloudflare.com" -Server "127.0.0.1" -ErrorAction SilentlyContinue | Out-Null
+    Write-Host "[OK] Verified DNS resolution after update." -ForegroundColor Green
 }
 
 function Test-DnsZenSecurity {
@@ -570,7 +760,16 @@ function Show-LiveMonitor {
 
 function Show-Menu {
     while ($true) {
+        Clear-Host
         Show-Banner
+        $updateVer = Test-UpdateAvailable
+        if ($updateVer) {
+            Write-Host "  +-------------------------------------------------------------+" -ForegroundColor Yellow
+            Write-Host "  |  Update Available! v$Version -> v$updateVer                           |" -ForegroundColor Yellow
+            Write-Host "  |  Run 'dnszen update' to install the latest features.         |" -ForegroundColor Yellow
+            Write-Host "  +-------------------------------------------------------------+" -ForegroundColor Yellow
+            Write-Host ""
+        }
         $statusStr = "NOT INSTALLED"
         $currentUrl = "None"
         if (Test-Path $StateFile) {
@@ -581,18 +780,27 @@ function Show-Menu {
         Write-Host "  Current Status: $statusStr" -ForegroundColor Green
         Write-Host "  Active DoH URL: $currentUrl" -ForegroundColor Cyan
         Write-Host ""
-        Write-Host "  [1] Change DoH URL"
-        Write-Host "  [2] View Status & Live Diagnostics"
-        Write-Host "  [3] Verify Security, Encryption & Leak Test"
-        Write-Host "  [4] Live Query Monitor (dnsmonitor)"
-        Write-Host "  [5] Test DNS Resolution & Speed"
-        Write-Host "  [6] Restart DNSZen Service"
-        Write-Host "  [7] Revert to Original DNS & Uninstall"
+        Write-Host "  DNS Configuration & Tools:" -ForegroundColor White
+        Write-Host "    [1] Change DoH URL / Select Preset"
+        Write-Host "    [2] Live Query Monitor (dnsmonitor)"
+        Write-Host "    [3] Verify Security, Encryption & Leak Test"
+        Write-Host "    [4] Test DNS Resolution & Speed"
+        Write-Host "    [5] View Status & Live Diagnostics"
         Write-Host ""
-        Write-Host "  Author GitHub: https://github.com/mxskeen/dnszen/" -ForegroundColor Cyan
-        Write-Host "  [8] Exit"
+        Write-Host "  Service & Maintenance:" -ForegroundColor White
+        Write-Host "    [6] Restart DNSZen Service"
+        Write-Host "    [7] View Service Logs"
+        if ($updateVer) {
+            Write-Host "    [8] Update DNSZen (v$Version -> v$updateVer)" -ForegroundColor Green
+        } else {
+            Write-Host "    [8] Update DNSZen"
+        }
+        Write-Host "    [9] Revert to Original DNS & Uninstall"
         Write-Host ""
-        $choice = Read-Host "Select option [1-8]"
+        Write-Host "    Author GitHub: https://github.com/mxskeen/dnszen/" -ForegroundColor DarkCyan
+        Write-Host "    [0] Exit"
+        Write-Host ""
+        $choice = Read-Host "Select option [0-9]"
         switch ($choice) {
             "1" {
                 $newUrl = Prompt-DoHUrl
@@ -606,7 +814,7 @@ function Show-Menu {
                 Read-Host "Press Enter to return to menu..."
             }
             "2" {
-                Show-Status
+                Show-LiveMonitor
                 Read-Host "Press Enter to return to menu..."
             }
             "3" {
@@ -614,13 +822,13 @@ function Show-Menu {
                 Read-Host "Press Enter to return to menu..."
             }
             "4" {
-                Show-LiveMonitor
-                Read-Host "Press Enter to return to menu..."
-            }
-            "5" {
                 $dom = Read-Host "Enter domain to test [default: cloudflare.com]"
                 if (-not $dom) { $dom = "cloudflare.com" }
                 Resolve-DnsName -Name $dom -Server "127.0.0.1"
+                Read-Host "Press Enter to return to menu..."
+            }
+            "5" {
+                Show-Status
                 Read-Host "Press Enter to return to menu..."
             }
             "6" {
@@ -630,13 +838,32 @@ function Show-Menu {
                 Read-Host "Press Enter to return to menu..."
             }
             "7" {
+                if (Test-Path $LogFile) {
+                    Get-Content -Path $LogFile -Tail 50
+                } else {
+                    Write-Host "No log file found at $LogFile" -ForegroundColor DarkGray
+                }
+                Read-Host "Press Enter to return to menu..."
+            }
+            "8" {
+                Invoke-Update
+                Read-Host "Press Enter to return to menu..."
+            }
+            "u" {
+                Invoke-Update
+                Read-Host "Press Enter to return to menu..."
+            }
+            "9" {
                 $confirm = Read-Host "Are you sure you want to revert to original DNS? [y/N]"
                 if ($confirm -match "^[yY]") {
                     Revert-SystemDNS
                     Exit
                 }
             }
-            "8" {
+            "0" {
+                Exit
+            }
+            "q" {
                 Exit
             }
         }
@@ -649,6 +876,30 @@ Elevate-Privileges
 switch ($Command.ToLower()) {
     "install" {
         Invoke-Install
+    }
+    "presets" {
+        $targetUrl = Prompt-DoHUrl
+        Write-ProxyConfig $targetUrl
+        Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+        Start-ScheduledTask -TaskName $TaskName
+        if (Test-Path $StateFile) {
+            $st = Get-Content $StateFile | ConvertFrom-Json
+            $st.DOH_URL = $targetUrl
+            $st | ConvertTo-Json | Set-Content $StateFile -Encoding UTF8
+        }
+        Write-Host "[OK] Updated upstream DoH URL to: $targetUrl" -ForegroundColor Green
+    }
+    "preset" {
+        $targetUrl = Prompt-DoHUrl
+        Write-ProxyConfig $targetUrl
+        Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+        Start-ScheduledTask -TaskName $TaskName
+        if (Test-Path $StateFile) {
+            $st = Get-Content $StateFile | ConvertFrom-Json
+            $st.DOH_URL = $targetUrl
+            $st | ConvertTo-Json | Set-Content $StateFile -Encoding UTF8
+        }
+        Write-Host "[OK] Updated upstream DoH URL to: $targetUrl" -ForegroundColor Green
     }
     "monitor" {
         Show-LiveMonitor
@@ -664,7 +915,12 @@ switch ($Command.ToLower()) {
         if (-not $targetUrl) {
             $targetUrl = Prompt-DoHUrl
         } else {
-            $targetUrl = Sanitize-Url $targetUrl
+            $presetMatch = Resolve-PresetUrl $targetUrl
+            if ($presetMatch) {
+                $targetUrl = $presetMatch
+            } else {
+                $targetUrl = Sanitize-Url $targetUrl
+            }
             Verify-DoHUrl $targetUrl | Out-Null
         }
         Write-ProxyConfig $targetUrl
@@ -689,10 +945,54 @@ switch ($Command.ToLower()) {
     "status" {
         Show-Status
     }
+    "update" {
+        Invoke-Update
+    }
+    "upgrade" {
+        Invoke-Update
+    }
     "test" {
         $dom = if ($Arg) { $Arg } else { "cloudflare.com" }
         Write-Host "Querying $dom via 127.0.0.1..."
         Resolve-DnsName -Name $dom -Server "127.0.0.1"
+    }
+    "help" {
+        Write-Host "DNSZen for Windows - Custom DNS-over-HTTPS (v$Version)"
+        Write-Host ""
+        Write-Host "Usage: dnszen [command]"
+        Write-Host "       dnsmonitor"
+        Write-Host ""
+        Write-Host "Commands:"
+        Write-Host "  (no args)             Open interactive menu (or run initial setup)"
+        Write-Host "  install               Run initial installation & configuration"
+        Write-Host "  presets               Select a built-in popular privacy preset"
+        Write-Host "  monitor, watch        Stream real-time DNS queries (dnsmonitor)"
+        Write-Host "  set [preset|url]      Update upstream DoH URL or select a preset"
+        Write-Host "  verify, leak-test     Verify encrypted DoH transport and leak-free status"
+        Write-Host "  status                Display current service status and health"
+        Write-Host "  test [domain]         Perform live DNS query test"
+        Write-Host "  restart               Restart the background proxy service"
+        Write-Host "  update, upgrade       Update DNSZen to the latest release"
+        Write-Host "  revert                Restore original system DNS & uninstall"
+        Write-Host "  help                  Show this help text"
+        Write-Host ""
+    }
+    "-help" {
+        Write-Host "DNSZen for Windows - Custom DNS-over-HTTPS (v$Version)"
+        Write-Host "Run 'dnszen help' for usage instructions."
+    }
+    "--help" {
+        Write-Host "DNSZen for Windows - Custom DNS-over-HTTPS (v$Version)"
+        Write-Host "Run 'dnszen help' for usage instructions."
+    }
+    "version" {
+        Write-Host "DNSZen version $Version"
+    }
+    "-version" {
+        Write-Host "DNSZen version $Version"
+    }
+    "--version" {
+        Write-Host "DNSZen version $Version"
     }
     "menu" {
         Show-Menu

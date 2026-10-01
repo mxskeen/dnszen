@@ -69,13 +69,37 @@ From any terminal window:
 |---|---|---|
 | **Open Visual Menu** | `sudo dnszen` | `dnszen` |
 | **Live Query Monitor** | `sudo dnsmonitor` *(or `sudo dnszen monitor`)* | `dnsmonitor` *(or `dnszen monitor`)* |
-| **Change DoH URL** | `sudo dnszen set <url>` | `dnszen set <url>` |
+| **Select Privacy Preset** | `sudo dnszen presets` | `dnszen presets` |
+| **Change DoH URL / Preset** | `sudo dnszen set [preset|url]` | `dnszen set [preset|url]` |
 | **Verify Encryption & Leaks** | `sudo dnszen verify` | `dnszen verify` |
 | **Check Status** | `sudo dnszen status` | `dnszen status` |
 | **Test Query & Latency** | `sudo dnszen test [domain]` | `dnszen test [domain]` |
 | **Restart Service** | `sudo dnszen restart` | `dnszen restart` |
 | **View Logs** | `sudo dnszen logs` | `Get-ScheduledTask DNSZen` |
+| **Update DNSZen** | `sudo dnszen update` | `dnszen update` |
 | **Revert to Original DNS** | `sudo dnszen revert` | `dnszen revert` |
+
+---
+
+### Popular Privacy Presets
+
+Don't have a custom NextDNS or AdGuard account yet? Choose from 5 built-in zero-configuration privacy presets:
+
+| Option | Provider | Description |
+|---|---|---|
+| **[1] AdGuard DNS** | AdGuard | Ad, tracker, phishing & malware blocking |
+| **[2] Cloudflare Security** | Cloudflare (1.1.1.2) | High-speed DoH + automated malware blocking |
+| **[3] Quad9** | Quad9 (9.9.9.9) | Threat intelligence, DNSSEC & Swiss privacy |
+| **[4] Mullvad DNS** | Mullvad | Strict zero-log privacy + ad & tracker blocking |
+| **[5] Cloudflare Standard** | Cloudflare (1.1.1.1) | Clean, ultra-low latency encrypted DNS |
+
+Switch to any preset anytime from terminal:
+```bash
+sudo dnszen set adguard
+sudo dnszen set cloudflare
+sudo dnszen set quad9
+sudo dnszen set mullvad
+```
 
 ---
 
@@ -106,12 +130,33 @@ dnsmonitor
 
 ---
 
-## Example DoH URLs
+### Self-Update & Release Notifications
+
+DNSZen checks GitHub in the background (non-blocking, cached for 24 hours) and notifies you in the terminal when a newer version is released:
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│  Update Available! v1.0.0 -> v1.1.0                         │
+│  Run 'sudo dnszen update' to install the latest features.   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+To update DNSZen directly anytime:
+```bash
+# Linux & macOS
+sudo dnszen update
+
+# Windows (PowerShell / CMD)
+dnszen update
+```
+
+---
+
+## Example Custom DoH URLs
 
 - **NextDNS:** `https://dns.nextdns.io/xxxxxx`
-- **AdGuard:** `https://dns.adguard-dns.com/dns-query`
-- **Cloudflare:** `https://cloudflare-dns.com/dns-query`
 - **ControlD:** `https://dns.controld.com/xxxxxx`
+- **AdGuard Custom:** `https://dns.adguard-dns.com/dns-query`
 - **Self-Hosted (Pi-hole / Technitium):** `https://dns.yourdomain.com/dns-query`
 
 *(You can omit `https://` when typing — DNSZen auto-formats it).*

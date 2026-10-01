@@ -10,6 +10,7 @@ set -eo pipefail
 # Constants & Paths
 # ------------------------------------------------------------------------------
 VERSION="1.0.0"
+REPO_RAW="https://raw.githubusercontent.com/mxskeen/dnszen/master"
 DNSPROXY_DEFAULT_VER="v0.85.0"
 INSTALL_DIR="/opt/dnszen"
 BIN_DIR="${INSTALL_DIR}/bin"
@@ -17,6 +18,7 @@ CONFIG_DIR="/etc/dnszen"
 BACKUP_DIR="${CONFIG_DIR}/backup"
 CONFIG_FILE="${CONFIG_DIR}/dnsproxy.yaml"
 STATE_FILE="${CONFIG_DIR}/dnszen.conf"
+UPDATE_CHECK_FILE="${CONFIG_DIR}/update_check"
 DNSPROXY_BIN="${BIN_DIR}/dnsproxy"
 CLI_SYMLINK="/usr/local/bin/dnszen"
 MONITOR_CLI_SYMLINK="/usr/local/bin/dnsmonitor"
@@ -92,6 +94,71 @@ show_banner() {
     echo "  ║                          by @mxskeen                          ║"
     echo "  ╚═══════════════════════════════════════════════════════════════╝"
     echo -e "${COLOR_RESET}"
+}
+
+# ------------------------------------------------------------------------------
+# Version Comparison & Update Notification
+# ------------------------------------------------------------------------------
+version_gt() {
+    [ "$1" = "$2" ] && return 1
+    local v1="${1#v}"
+    local v2="${2#v}"
+
+    local IFS=.
+    local i ver1=($v1) ver2=($v2)
+    for ((i=${#ver1[@]}; i<${#ver2[@]}; i++)); do
+        ver1[i]=0
+    done
+    for ((i=0; i<${#ver1[@]}; i++)); do
+        [[ -z ${ver2[i]} ]] && ver2[i]=0
+        if ((10#${ver1[i]} > 10#${ver2[i]})); then
+            return 0
+        fi
+        if ((10#${ver1[i]} < 10#${ver2[i]})); then
+            return 1
+        fi
+    done
+    return 1
+}
+
+AVAILABLE_UPDATE_VER=""
+
+check_update_notification() {
+    [ ! -f "${STATE_FILE}" ] && return 0
+    [ ! -d "${CONFIG_DIR}" ] && return 0
+
+    local now
+    now=$(date +%s 2>/dev/null || echo 0)
+    local last_check=0
+    local cached_ver=""
+
+    if [ -f "${UPDATE_CHECK_FILE}" ]; then
+        last_check=$(grep "^CHECKED_AT=" "${UPDATE_CHECK_FILE}" 2>/dev/null | cut -d '=' -f 2 || echo 0)
+        cached_ver=$(grep "^LATEST_VER=" "${UPDATE_CHECK_FILE}" 2>/dev/null | cut -d '=' -f 2 || echo "")
+    fi
+
+    local age=$(( now - last_check ))
+    # Check once every 24 hours (86400 seconds)
+    if [ -z "$cached_ver" ] || [ $age -gt 86400 ]; then
+        if command -v curl >/dev/null 2>&1; then
+            local remote_ver
+            remote_ver=$(curl -sSL -m 1 "${REPO_RAW}/scripts/dnszen.sh" 2>/dev/null | grep -E '^VERSION=' | head -n 1 | cut -d '"' -f 2 || true)
+            if [ -n "$remote_ver" ]; then
+                cached_ver="$remote_ver"
+                echo "CHECKED_AT=${now}" > "${UPDATE_CHECK_FILE}" 2>/dev/null || true
+                echo "LATEST_VER=${cached_ver}" >> "${UPDATE_CHECK_FILE}" 2>/dev/null || true
+            fi
+        fi
+    fi
+
+    if [ -n "$cached_ver" ] && version_gt "$cached_ver" "$VERSION"; then
+        echo -e "${COLOR_YELLOW}  ┌─────────────────────────────────────────────────────────────┐${COLOR_RESET}"
+        echo -e "${COLOR_YELLOW}  │${COLOR_RESET}  ${COLOR_BOLD}Update Available!${COLOR_RESET} v${VERSION} -> ${COLOR_GREEN}v${cached_ver}${COLOR_RESET}                           ${COLOR_YELLOW}│${COLOR_RESET}"
+        echo -e "${COLOR_YELLOW}  │${COLOR_RESET}  Run '${COLOR_CYAN}sudo dnszen update${COLOR_RESET}' to install the latest features.   ${COLOR_YELLOW}│${COLOR_RESET}"
+        echo -e "${COLOR_YELLOW}  └─────────────────────────────────────────────────────────────┘${COLOR_RESET}"
+        echo ""
+        AVAILABLE_UPDATE_VER="$cached_ver"
+    fi
 }
 
 # ------------------------------------------------------------------------------
@@ -430,7 +497,42 @@ except Exception:
 }
 
 # ------------------------------------------------------------------------------
-# Prompt User for DoH URL
+# Built-in Popular Privacy Presets
+# ------------------------------------------------------------------------------
+PRESET_ADGUARD="https://dns.adguard-dns.com/dns-query"
+PRESET_CLOUDFLARE_SEC="https://security.cloudflare-dns.com/dns-query"
+PRESET_QUAD9="https://dns.quad9.net/dns-query"
+PRESET_MULLVAD="https://adblock.doh.mullvad.net/dns-query"
+PRESET_CLOUDFLARE_STD="https://cloudflare-dns.com/dns-query"
+
+resolve_preset_url() {
+    local raw="$1"
+    local key
+    key="$(echo "$raw" | tr '[:upper:]' '[:lower:]' | tr -d ' ')"
+    case "$key" in
+        1|adguard|adguard-dns)
+            echo "$PRESET_ADGUARD"
+            ;;
+        2|cloudflare-security|cf-sec|security|1.1.1.2)
+            echo "$PRESET_CLOUDFLARE_SEC"
+            ;;
+        3|quad9|9.9.9.9)
+            echo "$PRESET_QUAD9"
+            ;;
+        4|mullvad|mullvad-adblock)
+            echo "$PRESET_MULLVAD"
+            ;;
+        5|cloudflare|cloudflare-standard|1.1.1.1)
+            echo "$PRESET_CLOUDFLARE_STD"
+            ;;
+        *)
+            echo ""
+            ;;
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# Prompt User for DoH URL / Preset Selection
 # ------------------------------------------------------------------------------
 prompt_for_url() {
     local default_current=""
@@ -439,57 +541,88 @@ prompt_for_url() {
     fi
 
     echo ""
-    echo -e "${COLOR_BOLD}Enter your Custom DNS-over-HTTPS (DoH) URL:${COLOR_RESET}"
-    echo -e "${COLOR_DIM}Examples:${COLOR_RESET}"
-    echo -e "  • NextDNS:    ${COLOR_CYAN}https://dns.nextdns.io/xxxxxx${COLOR_RESET}"
-    echo -e "  • AdGuard:    ${COLOR_CYAN}https://dns.adguard-dns.com/dns-query${COLOR_RESET}"
-    echo -e "  • Cloudflare: ${COLOR_CYAN}https://cloudflare-dns.com/dns-query${COLOR_RESET}"
-    echo -e "  • ControlD:   ${COLOR_CYAN}https://dns.controld.com/xxxxxx${COLOR_RESET}"
-    echo -e "  • Self-hosted:${COLOR_CYAN}https://dns.yourdomain.com/dns-query${COLOR_RESET}"
+    echo -e "${COLOR_BOLD}Select a DNS-over-HTTPS (DoH) Provider:${COLOR_RESET}"
+    echo ""
+    echo -e "  ${COLOR_CYAN}Popular Privacy Presets (No account required):${COLOR_RESET}"
+    echo -e "  [1] AdGuard DNS          ${COLOR_DIM}(DoH + Ad & Tracker Blocking)${COLOR_RESET}"
+    echo -e "  [2] Cloudflare Security  ${COLOR_DIM}(1.1.1.2 - Malware & Threat Protection)${COLOR_RESET}"
+    echo -e "  [3] Quad9                ${COLOR_DIM}(9.9.9.9 - Swiss Privacy & Threat Protection)${COLOR_RESET}"
+    echo -e "  [4] Mullvad DNS          ${COLOR_DIM}(Strict Zero-Log Privacy + Ad Blocking)${COLOR_RESET}"
+    echo -e "  [5] Cloudflare Standard  ${COLOR_DIM}(1.1.1.1 - Ultra-Fast Clean DoH)${COLOR_RESET}"
+    echo ""
+    echo -e "  ${COLOR_CYAN}Custom Endpoint:${COLOR_RESET}"
+    echo -e "  [6] Enter Custom DoH URL ${COLOR_DIM}(NextDNS, ControlD, Pi-hole, Self-Hosted)${COLOR_RESET}"
     echo ""
 
+    local prompt_msg="Select option [1-6]"
+    if [ -n "$default_current" ]; then
+        prompt_msg="Select option [1-6] [current: ${default_current}]"
+    fi
+
     while true; do
-        local user_input=""
-        if [ -n "$default_current" ]; then
-            prompt_read "DoH URL [current: ${default_current}]: " user_input
-            if [ -z "$user_input" ]; then
-                user_input="$default_current"
+        local choice=""
+        prompt_read "${prompt_msg}: " choice
+
+        if [ -z "$choice" ] && [ -n "$default_current" ]; then
+            SELECTED_DOH_URL="$default_current"
+            break
+        fi
+
+        local preset_match
+        preset_match="$(resolve_preset_url "$choice")"
+
+        if [ -n "$preset_match" ]; then
+            if verify_doh_url "$preset_match"; then
+                SELECTED_DOH_URL="$preset_match"
+                break
+            fi
+        elif [ "$choice" = "6" ] || [ "$choice" = "c" ] || [ "$choice" = "custom" ]; then
+            echo ""
+            echo -e "${COLOR_BOLD}Enter your Custom DoH URL:${COLOR_RESET}"
+            echo -e "${COLOR_DIM}Examples:${COLOR_RESET}"
+            echo -e "  • NextDNS:    ${COLOR_CYAN}https://dns.nextdns.io/xxxxxx${COLOR_RESET}"
+            echo -e "  • ControlD:   ${COLOR_CYAN}https://dns.controld.com/xxxxxx${COLOR_RESET}"
+            echo -e "  • Self-hosted:${COLOR_CYAN}https://dns.yourdomain.com/dns-query${COLOR_RESET}"
+            echo ""
+            local custom_url=""
+            prompt_read "DoH URL: " custom_url
+            if [ -z "$custom_url" ]; then
+                log_warn "URL cannot be empty."
+                continue
+            fi
+            custom_url="$(sanitize_url "$custom_url")"
+            if verify_doh_url "$custom_url"; then
+                SELECTED_DOH_URL="$custom_url"
+                break
+            else
+                echo ""
+                log_warn "The URL could not be validated. Would you like to:"
+                echo "  [1] Re-enter another URL (Recommended)"
+                echo "  [2] Use this URL anyway (Ignore failure)"
+                echo "  [3] Return to preset selection"
+                prompt_read "Select option [1-3]: " fallback_choice
+                case "$fallback_choice" in
+                    2)
+                        SELECTED_DOH_URL="$custom_url"
+                        break
+                        ;;
+                    3)
+                        continue
+                        ;;
+                    *)
+                        continue
+                        ;;
+                esac
+            fi
+        elif [[ "$choice" =~ ^https?:// ]] || [[ "$choice" =~ \. ]]; then
+            local direct_url
+            direct_url="$(sanitize_url "$choice")"
+            if verify_doh_url "$direct_url"; then
+                SELECTED_DOH_URL="$direct_url"
+                break
             fi
         else
-            prompt_read "DoH URL: " user_input
-        fi
-
-        if [ -z "$user_input" ]; then
-            log_warn "URL cannot be empty."
-            continue
-        fi
-
-        local sanitized_url
-        sanitized_url="$(sanitize_url "$user_input")"
-
-        if verify_doh_url "$sanitized_url"; then
-            SELECTED_DOH_URL="$sanitized_url"
-            break
-        else
-            echo ""
-            log_warn "The URL could not be validated. Would you like to:"
-            echo "  [1] Re-enter another URL (Recommended)"
-            echo "  [2] Use this URL anyway (Ignore failure)"
-            echo "  [3] Cancel setup"
-            prompt_read "Select option [1-3]: " choice
-            case "$choice" in
-                2)
-                    SELECTED_DOH_URL="$sanitized_url"
-                    break
-                    ;;
-                3)
-                    log_info "Setup cancelled by user."
-                    exit 0
-                    ;;
-                *)
-                    continue
-                    ;;
-            esac
+            log_warn "Invalid selection. Please choose 1-6 or enter a DoH URL."
         fi
     done
 }
@@ -1164,7 +1297,14 @@ do_set_url() {
         prompt_for_url
         new_url="$SELECTED_DOH_URL"
     else
-        new_url="$(sanitize_url "$new_url")"
+        local preset_match
+        preset_match="$(resolve_preset_url "$new_url")"
+        if [ -n "$preset_match" ]; then
+            new_url="$preset_match"
+        else
+            new_url="$(sanitize_url "$new_url")"
+        fi
+
         if ! verify_doh_url "$new_url"; then
             echo ""
             read -r -p "Verification failed. Do you still want to apply this URL? [y/N]: " force_choice
@@ -1191,6 +1331,7 @@ do_set_url() {
 # ------------------------------------------------------------------------------
 do_status() {
     detect_platform
+    check_update_notification
     echo ""
     echo -e "${COLOR_BOLD}--- DNSZen System Status ---${COLOR_RESET}"
 
@@ -1314,6 +1455,101 @@ do_logs() {
             log_info "No log file found."
         fi
     fi
+}
+
+# ------------------------------------------------------------------------------
+# Action: Self-Update
+# ------------------------------------------------------------------------------
+do_update() {
+    show_banner
+    detect_platform
+    check_root
+
+    echo -e "${COLOR_BOLD}Checking for DNSZen updates...${COLOR_RESET}"
+    echo ""
+
+    if ! command -v curl >/dev/null 2>&1; then
+        log_err "curl is required to check for and perform updates."
+        return 1
+    fi
+
+    local tmp_script
+    tmp_script=$(mktemp /tmp/dnszen-update.XXXXXX)
+
+    log_step "Fetching latest release script from GitHub..."
+    if ! curl -sSL -m 15 "${REPO_RAW}/scripts/dnszen.sh" -o "${tmp_script}"; then
+        rm -f "${tmp_script}"
+        log_err "Failed to download update from GitHub. Please check your internet connection."
+        return 1
+    fi
+
+    # Validate syntax of downloaded script
+    if ! bash -n "${tmp_script}" 2>/dev/null; then
+        rm -f "${tmp_script}"
+        log_err "Downloaded update failed bash syntax validation. Aborting update for safety."
+        return 1
+    fi
+
+    local remote_ver
+    remote_ver=$(grep -E '^VERSION=' "${tmp_script}" | head -n 1 | cut -d '"' -f 2 || true)
+    if [ -z "$remote_ver" ]; then
+        rm -f "${tmp_script}"
+        log_err "Could not determine version from downloaded script."
+        return 1
+    fi
+
+    local force="${1:-}"
+    if [ "$force" != "--force" ] && [ "$force" != "-f" ]; then
+        if ! version_gt "$remote_ver" "$VERSION" && [ "$remote_ver" = "$VERSION" ]; then
+            rm -f "${tmp_script}"
+            log_ok "DNSZen is already up to date (v${VERSION})."
+            return 0
+        fi
+    fi
+
+    log_info "Updating DNSZen from v${VERSION} to v${remote_ver}..."
+
+    # Install updated script
+    mkdir -p "${INSTALL_DIR}"
+    cp "${tmp_script}" "${INSTALL_DIR}/dnszen"
+    chmod 755 "${INSTALL_DIR}/dnszen"
+    rm -f "${tmp_script}"
+
+    # Ensure symlinks exist
+    mkdir -p "$(dirname "${CLI_SYMLINK}")"
+    ln -sf "${INSTALL_DIR}/dnszen" "${CLI_SYMLINK}"
+    ln -sf "${INSTALL_DIR}/dnszen" "${MONITOR_CLI_SYMLINK}"
+
+    # Update cache file
+    local now
+    now=$(date +%s 2>/dev/null || echo 0)
+    mkdir -p "${CONFIG_DIR}"
+    echo "CHECKED_AT=${now}" > "${UPDATE_CHECK_FILE}" 2>/dev/null || true
+    echo "LATEST_VER=${remote_ver}" >> "${UPDATE_CHECK_FILE}" 2>/dev/null || true
+
+    # Check and upgrade dnsproxy binary if necessary
+    if [ -x "${DNSPROXY_BIN}" ]; then
+        log_step "Verifying dnsproxy proxy engine..."
+        install_dnsproxy_binary 2>/dev/null || true
+    fi
+
+    # Update state file version if state file exists
+    if [ -f "${STATE_FILE}" ]; then
+        if grep -q "^VERSION=" "${STATE_FILE}"; then
+            sed -i "s/^VERSION=.*/VERSION=\"${remote_ver}\"/" "${STATE_FILE}" 2>/dev/null || true
+        else
+            echo "VERSION=\"${remote_ver}\"" >> "${STATE_FILE}" 2>/dev/null || true
+        fi
+        restart_service
+    fi
+
+    echo ""
+    echo -e "${COLOR_GREEN}═══════════════════════════════════════════════════════════════${COLOR_RESET}"
+    echo -e "${COLOR_BOLD}${COLOR_GREEN}  DNSZen successfully updated to v${remote_ver}!${COLOR_RESET}"
+    echo -e "${COLOR_GREEN}═══════════════════════════════════════════════════════════════${COLOR_RESET}"
+    echo ""
+    run_live_test "cloudflare.com" || true
+    echo ""
 }
 
 # ------------------------------------------------------------------------------
@@ -1552,7 +1788,9 @@ if __name__ == "__main__":
 # ------------------------------------------------------------------------------
 show_menu() {
     while true; do
+        clear 2>/dev/null || true
         show_banner
+        check_update_notification
         detect_platform
 
         local status_str="NOT INSTALLED"
@@ -1566,19 +1804,28 @@ show_menu() {
 
         echo -e "  Current Status: ${status_str}"
         echo -e "  Active DoH URL: ${COLOR_CYAN}${current_url}${COLOR_RESET}"
-        echo "  [1] Change DoH URL"
-        echo "  [2] View Status & Live Diagnostics"
-        echo "  [3] Verify Security, Encryption & Leak Test"
-        echo "  [4] Live Query Monitor (dnsmonitor)"
-        echo "  [5] Test DNS Resolution & Speed"
-        echo "  [6] Restart DNSZen Service"
-        echo "  [7] View Logs"
-        echo "  [8] Revert to Original DNS & Uninstall"
         echo ""
-        echo -e "  Author GitHub: ${COLOR_CYAN}https://github.com/mxskeen/dnszen/${COLOR_RESET}"
-        echo "  [9] Exit"
+        echo -e "  ${COLOR_BOLD}DNS Configuration & Tools:${COLOR_RESET}"
+        echo "    [1] Change DoH URL / Select Preset"
+        echo "    [2] Live Query Monitor (dnsmonitor)"
+        echo "    [3] Verify Security, Encryption & Leak Test"
+        echo "    [4] Test DNS Resolution & Speed"
+        echo "    [5] View Status & Live Diagnostics"
         echo ""
-        prompt_read "Select option [1-9]: " menu_choice
+        echo -e "  ${COLOR_BOLD}Service & Maintenance:${COLOR_RESET}"
+        echo "    [6] Restart DNSZen Service"
+        echo "    [7] View Service Logs"
+        if [ -n "$AVAILABLE_UPDATE_VER" ]; then
+            echo -e "    [8] ${COLOR_GREEN}Update DNSZen (v${VERSION} -> v${AVAILABLE_UPDATE_VER})${COLOR_RESET}"
+        else
+            echo "    [8] Update DNSZen"
+        fi
+        echo "    [9] Revert to Original DNS & Uninstall"
+        echo ""
+        echo -e "    ${COLOR_DIM}Author GitHub: https://github.com/mxskeen/dnszen/${COLOR_RESET}"
+        echo "    [0] Exit"
+        echo ""
+        prompt_read "Select option [0-9]: " menu_choice
 
         case "$menu_choice" in
             1)
@@ -1586,7 +1833,7 @@ show_menu() {
                 prompt_read "Press Enter to return to menu..." _dummy
                 ;;
             2)
-                do_status
+                do_monitor
                 prompt_read "Press Enter to return to menu..." _dummy
                 ;;
             3)
@@ -1594,13 +1841,13 @@ show_menu() {
                 prompt_read "Press Enter to return to menu..." _dummy
                 ;;
             4)
-                do_monitor
-                prompt_read "Press Enter to return to menu..." _dummy
-                ;;
-            5)
                 prompt_read "Enter domain to test [default: cloudflare.com]: " test_dom
                 test_dom="${test_dom:-cloudflare.com}"
                 run_live_test "$test_dom"
+                prompt_read "Press Enter to return to menu..." _dummy
+                ;;
+            5)
+                do_status
                 prompt_read "Press Enter to return to menu..." _dummy
                 ;;
             6)
@@ -1611,15 +1858,19 @@ show_menu() {
                 do_logs
                 prompt_read "Press Enter to return to menu..." _dummy
                 ;;
-            8)
+            8|u|U)
+                do_update
+                prompt_read "Press Enter to return to menu..." _dummy
+                ;;
+            9)
                 do_revert
                 exit 0
                 ;;
-            9|q|Q)
+            0|q|Q)
                 exit 0
                 ;;
             *)
-                log_warn "Invalid selection. Please choose 1-9."
+                log_warn "Invalid selection. Please choose 0-9."
                 sleep 1
                 ;;
         esac
@@ -1642,13 +1893,15 @@ main() {
             echo "Commands:"
             echo "  (no args)             Open interactive menu (or run initial setup)"
             echo "  install               Run initial installation & configuration"
+            echo "  presets               Select a built-in popular privacy preset"
             echo "  monitor, watch        Stream real-time DNS queries (dnsmonitor)"
-            echo "  set <url>             Update upstream DoH URL"
+            echo "  set [preset|url]      Update upstream DoH URL or select a preset"
             echo "  verify, leak-test     Verify encrypted DoH transport and leak-free status"
             echo "  status                Display current service status and health"
             echo "  test [domain]         Perform live DNS query test and benchmark"
             echo "  restart               Restart the background proxy service"
             echo "  logs                  View recent service logs"
+            echo "  update, upgrade       Update DNSZen to the latest release"
             echo "  revert                Restore original system DNS & uninstall"
             echo "  help                  Show this help text"
             echo ""
@@ -1675,6 +1928,9 @@ main() {
         install)
             do_install
             ;;
+        presets|preset)
+            do_set_url ""
+            ;;
         monitor|watch|live)
             do_monitor
             ;;
@@ -1697,6 +1953,10 @@ main() {
             ;;
         logs)
             do_logs
+            ;;
+        update|upgrade)
+            shift
+            do_update "$@"
             ;;
         revert|uninstall|remove)
             do_revert
