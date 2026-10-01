@@ -10,6 +10,7 @@ set -eo pipefail
 # Constants & Paths
 # ------------------------------------------------------------------------------
 VERSION="1.0.0"
+REPO_RAW="https://raw.githubusercontent.com/mxskeen/dnszen/master"
 DNSPROXY_DEFAULT_VER="v0.85.0"
 INSTALL_DIR="/opt/dnszen"
 BIN_DIR="${INSTALL_DIR}/bin"
@@ -17,6 +18,7 @@ CONFIG_DIR="/etc/dnszen"
 BACKUP_DIR="${CONFIG_DIR}/backup"
 CONFIG_FILE="${CONFIG_DIR}/dnsproxy.yaml"
 STATE_FILE="${CONFIG_DIR}/dnszen.conf"
+UPDATE_CHECK_FILE="${CONFIG_DIR}/update_check"
 DNSPROXY_BIN="${BIN_DIR}/dnsproxy"
 CLI_SYMLINK="/usr/local/bin/dnszen"
 MONITOR_CLI_SYMLINK="/usr/local/bin/dnsmonitor"
@@ -92,6 +94,71 @@ show_banner() {
     echo "  ║                          by @mxskeen                          ║"
     echo "  ╚═══════════════════════════════════════════════════════════════╝"
     echo -e "${COLOR_RESET}"
+}
+
+# ------------------------------------------------------------------------------
+# Version Comparison & Update Notification
+# ------------------------------------------------------------------------------
+version_gt() {
+    [ "$1" = "$2" ] && return 1
+    local v1="${1#v}"
+    local v2="${2#v}"
+
+    local IFS=.
+    local i ver1=($v1) ver2=($v2)
+    for ((i=${#ver1[@]}; i<${#ver2[@]}; i++)); do
+        ver1[i]=0
+    done
+    for ((i=0; i<${#ver1[@]}; i++)); do
+        [[ -z ${ver2[i]} ]] && ver2[i]=0
+        if ((10#${ver1[i]} > 10#${ver2[i]})); then
+            return 0
+        fi
+        if ((10#${ver1[i]} < 10#${ver2[i]})); then
+            return 1
+        fi
+    done
+    return 1
+}
+
+AVAILABLE_UPDATE_VER=""
+
+check_update_notification() {
+    [ ! -f "${STATE_FILE}" ] && return 0
+    [ ! -d "${CONFIG_DIR}" ] && return 0
+
+    local now
+    now=$(date +%s 2>/dev/null || echo 0)
+    local last_check=0
+    local cached_ver=""
+
+    if [ -f "${UPDATE_CHECK_FILE}" ]; then
+        last_check=$(grep "^CHECKED_AT=" "${UPDATE_CHECK_FILE}" 2>/dev/null | cut -d '=' -f 2 || echo 0)
+        cached_ver=$(grep "^LATEST_VER=" "${UPDATE_CHECK_FILE}" 2>/dev/null | cut -d '=' -f 2 || echo "")
+    fi
+
+    local age=$(( now - last_check ))
+    # Check once every 24 hours (86400 seconds)
+    if [ -z "$cached_ver" ] || [ $age -gt 86400 ]; then
+        if command -v curl >/dev/null 2>&1; then
+            local remote_ver
+            remote_ver=$(curl -sSL -m 1 "${REPO_RAW}/scripts/dnszen.sh" 2>/dev/null | grep -E '^VERSION=' | head -n 1 | cut -d '"' -f 2 || true)
+            if [ -n "$remote_ver" ]; then
+                cached_ver="$remote_ver"
+                echo "CHECKED_AT=${now}" > "${UPDATE_CHECK_FILE}" 2>/dev/null || true
+                echo "LATEST_VER=${cached_ver}" >> "${UPDATE_CHECK_FILE}" 2>/dev/null || true
+            fi
+        fi
+    fi
+
+    if [ -n "$cached_ver" ] && version_gt "$cached_ver" "$VERSION"; then
+        echo -e "${COLOR_YELLOW}  ┌─────────────────────────────────────────────────────────────┐${COLOR_RESET}"
+        echo -e "${COLOR_YELLOW}  │${COLOR_RESET}  ${COLOR_BOLD}Update Available!${COLOR_RESET} v${VERSION} -> ${COLOR_GREEN}v${cached_ver}${COLOR_RESET}                           ${COLOR_YELLOW}│${COLOR_RESET}"
+        echo -e "${COLOR_YELLOW}  │${COLOR_RESET}  Run '${COLOR_CYAN}sudo dnszen update${COLOR_RESET}' to install the latest features.   ${COLOR_YELLOW}│${COLOR_RESET}"
+        echo -e "${COLOR_YELLOW}  └─────────────────────────────────────────────────────────────┘${COLOR_RESET}"
+        echo ""
+        AVAILABLE_UPDATE_VER="$cached_ver"
+    fi
 }
 
 # ------------------------------------------------------------------------------
@@ -1264,6 +1331,7 @@ do_set_url() {
 # ------------------------------------------------------------------------------
 do_status() {
     detect_platform
+    check_update_notification
     echo ""
     echo -e "${COLOR_BOLD}--- DNSZen System Status ---${COLOR_RESET}"
 
@@ -1387,6 +1455,101 @@ do_logs() {
             log_info "No log file found."
         fi
     fi
+}
+
+# ------------------------------------------------------------------------------
+# Action: Self-Update
+# ------------------------------------------------------------------------------
+do_update() {
+    show_banner
+    detect_platform
+    check_root
+
+    echo -e "${COLOR_BOLD}Checking for DNSZen updates...${COLOR_RESET}"
+    echo ""
+
+    if ! command -v curl >/dev/null 2>&1; then
+        log_err "curl is required to check for and perform updates."
+        return 1
+    fi
+
+    local tmp_script
+    tmp_script=$(mktemp /tmp/dnszen-update.XXXXXX)
+
+    log_step "Fetching latest release script from GitHub..."
+    if ! curl -sSL -m 15 "${REPO_RAW}/scripts/dnszen.sh" -o "${tmp_script}"; then
+        rm -f "${tmp_script}"
+        log_err "Failed to download update from GitHub. Please check your internet connection."
+        return 1
+    fi
+
+    # Validate syntax of downloaded script
+    if ! bash -n "${tmp_script}" 2>/dev/null; then
+        rm -f "${tmp_script}"
+        log_err "Downloaded update failed bash syntax validation. Aborting update for safety."
+        return 1
+    fi
+
+    local remote_ver
+    remote_ver=$(grep -E '^VERSION=' "${tmp_script}" | head -n 1 | cut -d '"' -f 2 || true)
+    if [ -z "$remote_ver" ]; then
+        rm -f "${tmp_script}"
+        log_err "Could not determine version from downloaded script."
+        return 1
+    fi
+
+    local force="${1:-}"
+    if [ "$force" != "--force" ] && [ "$force" != "-f" ]; then
+        if ! version_gt "$remote_ver" "$VERSION" && [ "$remote_ver" = "$VERSION" ]; then
+            rm -f "${tmp_script}"
+            log_ok "DNSZen is already up to date (v${VERSION})."
+            return 0
+        fi
+    fi
+
+    log_info "Updating DNSZen from v${VERSION} to v${remote_ver}..."
+
+    # Install updated script
+    mkdir -p "${INSTALL_DIR}"
+    cp "${tmp_script}" "${INSTALL_DIR}/dnszen"
+    chmod 755 "${INSTALL_DIR}/dnszen"
+    rm -f "${tmp_script}"
+
+    # Ensure symlinks exist
+    mkdir -p "$(dirname "${CLI_SYMLINK}")"
+    ln -sf "${INSTALL_DIR}/dnszen" "${CLI_SYMLINK}"
+    ln -sf "${INSTALL_DIR}/dnszen" "${MONITOR_CLI_SYMLINK}"
+
+    # Update cache file
+    local now
+    now=$(date +%s 2>/dev/null || echo 0)
+    mkdir -p "${CONFIG_DIR}"
+    echo "CHECKED_AT=${now}" > "${UPDATE_CHECK_FILE}" 2>/dev/null || true
+    echo "LATEST_VER=${remote_ver}" >> "${UPDATE_CHECK_FILE}" 2>/dev/null || true
+
+    # Check and upgrade dnsproxy binary if necessary
+    if [ -x "${DNSPROXY_BIN}" ]; then
+        log_step "Verifying dnsproxy proxy engine..."
+        install_dnsproxy_binary 2>/dev/null || true
+    fi
+
+    # Update state file version if state file exists
+    if [ -f "${STATE_FILE}" ]; then
+        if grep -q "^VERSION=" "${STATE_FILE}"; then
+            sed -i "s/^VERSION=.*/VERSION=\"${remote_ver}\"/" "${STATE_FILE}" 2>/dev/null || true
+        else
+            echo "VERSION=\"${remote_ver}\"" >> "${STATE_FILE}" 2>/dev/null || true
+        fi
+        restart_service
+    fi
+
+    echo ""
+    echo -e "${COLOR_GREEN}═══════════════════════════════════════════════════════════════${COLOR_RESET}"
+    echo -e "${COLOR_BOLD}${COLOR_GREEN}  DNSZen successfully updated to v${remote_ver}!${COLOR_RESET}"
+    echo -e "${COLOR_GREEN}═══════════════════════════════════════════════════════════════${COLOR_RESET}"
+    echo ""
+    run_live_test "cloudflare.com" || true
+    echo ""
 }
 
 # ------------------------------------------------------------------------------
@@ -1625,7 +1788,9 @@ if __name__ == "__main__":
 # ------------------------------------------------------------------------------
 show_menu() {
     while true; do
+        clear 2>/dev/null || true
         show_banner
+        check_update_notification
         detect_platform
 
         local status_str="NOT INSTALLED"
@@ -1646,12 +1811,17 @@ show_menu() {
         echo "  [5] Test DNS Resolution & Speed"
         echo "  [6] Restart DNSZen Service"
         echo "  [7] View Logs"
-        echo "  [8] Revert to Original DNS & Uninstall"
+        if [ -n "$AVAILABLE_UPDATE_VER" ]; then
+            echo -e "  [8] ${COLOR_GREEN}Update DNSZen (v${VERSION} -> v${AVAILABLE_UPDATE_VER})${COLOR_RESET}"
+        else
+            echo "  [8] Update DNSZen"
+        fi
+        echo "  [9] Revert to Original DNS & Uninstall"
         echo ""
         echo -e "  Author GitHub: ${COLOR_CYAN}https://github.com/mxskeen/dnszen/${COLOR_RESET}"
-        echo "  [9] Exit"
+        echo "  [0] Exit"
         echo ""
-        prompt_read "Select option [1-9]: " menu_choice
+        prompt_read "Select option [0-9]: " menu_choice
 
         case "$menu_choice" in
             1)
@@ -1684,15 +1854,19 @@ show_menu() {
                 do_logs
                 prompt_read "Press Enter to return to menu..." _dummy
                 ;;
-            8)
+            8|u|U)
+                do_update
+                prompt_read "Press Enter to return to menu..." _dummy
+                ;;
+            9)
                 do_revert
                 exit 0
                 ;;
-            9|q|Q)
+            0|q|Q)
                 exit 0
                 ;;
             *)
-                log_warn "Invalid selection. Please choose 1-9."
+                log_warn "Invalid selection. Please choose 0-9."
                 sleep 1
                 ;;
         esac
@@ -1723,6 +1897,7 @@ main() {
             echo "  test [domain]         Perform live DNS query test and benchmark"
             echo "  restart               Restart the background proxy service"
             echo "  logs                  View recent service logs"
+            echo "  update, upgrade       Update DNSZen to the latest release"
             echo "  revert                Restore original system DNS & uninstall"
             echo "  help                  Show this help text"
             echo ""
@@ -1774,6 +1949,10 @@ main() {
             ;;
         logs)
             do_logs
+            ;;
+        update|upgrade)
+            shift
+            do_update "$@"
             ;;
         revert|uninstall|remove)
             do_revert

@@ -76,6 +76,7 @@ From any terminal window:
 | **Test Query & Latency** | `sudo dnszen test [domain]` | `dnszen test [domain]` |
 | **Restart Service** | `sudo dnszen restart` | `dnszen restart` |
 | **View Logs** | `sudo dnszen logs` | `Get-ScheduledTask DNSZen` |
+| **Update DNSZen** | `sudo dnszen update` | `dnszen update` |
 | **Revert to Original DNS** | `sudo dnszen revert` | `dnszen revert` |
 
 ---
@@ -126,6 +127,28 @@ dnsmonitor
 - **Filter & Block Detection:** Instantly flags ad and tracker blocks (`[BLOCKED]`) from your upstream provider (RethinkDNS, NextDNS, AdGuard).
 - **Latency Benchmark:** Measures real round-trip query time for each request.
 - **Cache Optimization:** Shows sub-millisecond local cache hits (`[CACHED]`).
+
+---
+
+### Self-Update & Release Notifications
+
+DNSZen checks GitHub in the background (non-blocking, cached for 24 hours) and notifies you in the terminal when a newer version is released:
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│  Update Available! v1.0.0 -> v1.1.0                         │
+│  Run 'sudo dnszen update' to install the latest features.   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+To update DNSZen directly anytime:
+```bash
+# Linux & macOS
+sudo dnszen update
+
+# Windows (PowerShell / CMD)
+dnszen update
+```
 
 ---
 
