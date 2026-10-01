@@ -148,35 +148,97 @@ function Verify-DoHUrl([string]$url) {
     return $verified
 }
 
+function Resolve-PresetUrl([string]$raw) {
+    if (-not $raw) { return "" }
+    $key = $raw.ToLower().Trim()
+    switch ($key) {
+        "1"                   { return "https://dns.adguard-dns.com/dns-query" }
+        "adguard"             { return "https://dns.adguard-dns.com/dns-query" }
+        "adguard-dns"         { return "https://dns.adguard-dns.com/dns-query" }
+        "2"                   { return "https://security.cloudflare-dns.com/dns-query" }
+        "cloudflare-security" { return "https://security.cloudflare-dns.com/dns-query" }
+        "cf-sec"              { return "https://security.cloudflare-dns.com/dns-query" }
+        "security"            { return "https://security.cloudflare-dns.com/dns-query" }
+        "1.1.1.2"             { return "https://security.cloudflare-dns.com/dns-query" }
+        "3"                   { return "https://dns.quad9.net/dns-query" }
+        "quad9"               { return "https://dns.quad9.net/dns-query" }
+        "9.9.9.9"             { return "https://dns.quad9.net/dns-query" }
+        "4"                   { return "https://adblock.doh.mullvad.net/dns-query" }
+        "mullvad"             { return "https://adblock.doh.mullvad.net/dns-query" }
+        "mullvad-adblock"     { return "https://adblock.doh.mullvad.net/dns-query" }
+        "5"                   { return "https://cloudflare-dns.com/dns-query" }
+        "cloudflare"          { return "https://cloudflare-dns.com/dns-query" }
+        "cloudflare-standard" { return "https://cloudflare-dns.com/dns-query" }
+        "1.1.1.1"             { return "https://cloudflare-dns.com/dns-query" }
+        Default               { return "" }
+    }
+}
+
 function Prompt-DoHUrl {
+    $currentUrl = ""
+    if (Test-Path $StateFile) {
+        $st = Get-Content $StateFile | ConvertFrom-Json
+        $currentUrl = $st.DOH_URL
+    }
+
     Write-Host ""
-    Write-Host "Enter your Custom DNS-over-HTTPS (DoH) URL:" -ForegroundColor White
-    Write-Host "Examples:" -ForegroundColor DarkGray
-    Write-Host "  * NextDNS:    https://dns.nextdns.io/xxxxxx" -ForegroundColor Cyan
-    Write-Host "  * AdGuard:    https://dns.adguard-dns.com/dns-query" -ForegroundColor Cyan
-    Write-Host "  * Cloudflare: https://cloudflare-dns.com/dns-query" -ForegroundColor Cyan
-    Write-Host "  * Self-host:  https://yourdomain.com/dns-query" -ForegroundColor Cyan
+    Write-Host "Select a DNS-over-HTTPS (DoH) Provider:" -ForegroundColor White
+    Write-Host ""
+    Write-Host "  Popular Privacy Presets (No account required):" -ForegroundColor Cyan
+    Write-Host "  [1] AdGuard DNS          (DoH + Ad & Tracker Blocking)" -ForegroundColor Gray
+    Write-Host "  [2] Cloudflare Security  (1.1.1.2 - Malware & Threat Protection)" -ForegroundColor Gray
+    Write-Host "  [3] Quad9                (9.9.9.9 - Swiss Privacy & Threat Protection)" -ForegroundColor Gray
+    Write-Host "  [4] Mullvad DNS          (Strict Zero-Log Privacy + Ad Blocking)" -ForegroundColor Gray
+    Write-Host "  [5] Cloudflare Standard  (1.1.1.1 - Ultra-Fast Clean DoH)" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  Custom Endpoint:" -ForegroundColor Cyan
+    Write-Host "  [6] Enter Custom DoH URL (NextDNS, ControlD, Pi-hole, Self-Hosted)" -ForegroundColor Gray
     Write-Host ""
 
     while ($true) {
-        $inputUrl = Read-Host "DoH URL"
-        if ([string]::IsNullOrWhiteSpace($inputUrl)) {
-            Write-Warning "URL cannot be empty."
-            continue
+        $promptStr = if ($currentUrl) { "Select option [1-6] [current: $currentUrl]" } else { "Select option [1-6]" }
+        $choice = Read-Host $promptStr
+
+        if ([string]::IsNullOrWhiteSpace($choice) -and $currentUrl) {
+            return $currentUrl
         }
 
-        $sanitized = Sanitize-Url $inputUrl
-        if (Verify-DoHUrl $sanitized) {
-            return $sanitized
-        } else {
+        $presetMatch = Resolve-PresetUrl $choice
+        if ($presetMatch) {
+            if (Verify-DoHUrl $presetMatch) {
+                return $presetMatch
+            }
+        } elseif ($choice -eq "6" -or $choice -eq "c" -or $choice -eq "custom") {
             Write-Host ""
-            Write-Host "Verification failed. Options:" -ForegroundColor Yellow
-            Write-Host "  [1] Re-enter another URL (Recommended)"
-            Write-Host "  [2] Use this URL anyway"
-            Write-Host "  [3] Cancel"
-            $opt = Read-Host "Select [1-3]"
-            if ($opt -eq "2") { return $sanitized }
-            if ($opt -eq "3") { Exit }
+            Write-Host "Enter your Custom DoH URL:" -ForegroundColor White
+            Write-Host "  Examples: NextDNS: https://dns.nextdns.io/xxxxxx" -ForegroundColor DarkGray
+            Write-Host "            ControlD: https://dns.controld.com/xxxxxx" -ForegroundColor DarkGray
+            Write-Host "            Self-host: https://yourdomain.com/dns-query" -ForegroundColor DarkGray
+            $inputUrl = Read-Host "DoH URL"
+            if ([string]::IsNullOrWhiteSpace($inputUrl)) {
+                Write-Warning "URL cannot be empty."
+                continue
+            }
+            $clean = Sanitize-Url $inputUrl
+            if (Verify-DoHUrl $clean) {
+                return $clean
+            } else {
+                Write-Host ""
+                Write-Host "Verification failed. Options:" -ForegroundColor Yellow
+                Write-Host "  [1] Re-enter another URL (Recommended)"
+                Write-Host "  [2] Use this URL anyway"
+                Write-Host "  [3] Return to preset selection"
+                $opt = Read-Host "Select [1-3]"
+                if ($opt -eq "2") { return $clean }
+                if ($opt -eq "3") { continue }
+            }
+        } elseif ($choice -match "^https?://" -or $choice -match "\.") {
+            $clean = Sanitize-Url $choice
+            if (Verify-DoHUrl $clean) {
+                return $clean
+            }
+        } else {
+            Write-Warning "Invalid selection. Please choose 1-6 or enter a DoH URL."
         }
     }
 }
@@ -581,7 +643,7 @@ function Show-Menu {
         Write-Host "  Current Status: $statusStr" -ForegroundColor Green
         Write-Host "  Active DoH URL: $currentUrl" -ForegroundColor Cyan
         Write-Host ""
-        Write-Host "  [1] Change DoH URL"
+        Write-Host "  [1] Change DoH URL / Select Preset"
         Write-Host "  [2] View Status & Live Diagnostics"
         Write-Host "  [3] Verify Security, Encryption & Leak Test"
         Write-Host "  [4] Live Query Monitor (dnsmonitor)"
@@ -650,6 +712,30 @@ switch ($Command.ToLower()) {
     "install" {
         Invoke-Install
     }
+    "presets" {
+        $targetUrl = Prompt-DoHUrl
+        Write-ProxyConfig $targetUrl
+        Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+        Start-ScheduledTask -TaskName $TaskName
+        if (Test-Path $StateFile) {
+            $st = Get-Content $StateFile | ConvertFrom-Json
+            $st.DOH_URL = $targetUrl
+            $st | ConvertTo-Json | Set-Content $StateFile -Encoding UTF8
+        }
+        Write-Host "[OK] Updated upstream DoH URL to: $targetUrl" -ForegroundColor Green
+    }
+    "preset" {
+        $targetUrl = Prompt-DoHUrl
+        Write-ProxyConfig $targetUrl
+        Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+        Start-ScheduledTask -TaskName $TaskName
+        if (Test-Path $StateFile) {
+            $st = Get-Content $StateFile | ConvertFrom-Json
+            $st.DOH_URL = $targetUrl
+            $st | ConvertTo-Json | Set-Content $StateFile -Encoding UTF8
+        }
+        Write-Host "[OK] Updated upstream DoH URL to: $targetUrl" -ForegroundColor Green
+    }
     "monitor" {
         Show-LiveMonitor
     }
@@ -664,7 +750,12 @@ switch ($Command.ToLower()) {
         if (-not $targetUrl) {
             $targetUrl = Prompt-DoHUrl
         } else {
-            $targetUrl = Sanitize-Url $targetUrl
+            $presetMatch = Resolve-PresetUrl $targetUrl
+            if ($presetMatch) {
+                $targetUrl = $presetMatch
+            } else {
+                $targetUrl = Sanitize-Url $targetUrl
+            }
             Verify-DoHUrl $targetUrl | Out-Null
         }
         Write-ProxyConfig $targetUrl

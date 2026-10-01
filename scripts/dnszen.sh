@@ -430,7 +430,42 @@ except Exception:
 }
 
 # ------------------------------------------------------------------------------
-# Prompt User for DoH URL
+# Built-in Popular Privacy Presets
+# ------------------------------------------------------------------------------
+PRESET_ADGUARD="https://dns.adguard-dns.com/dns-query"
+PRESET_CLOUDFLARE_SEC="https://security.cloudflare-dns.com/dns-query"
+PRESET_QUAD9="https://dns.quad9.net/dns-query"
+PRESET_MULLVAD="https://adblock.doh.mullvad.net/dns-query"
+PRESET_CLOUDFLARE_STD="https://cloudflare-dns.com/dns-query"
+
+resolve_preset_url() {
+    local raw="$1"
+    local key
+    key="$(echo "$raw" | tr '[:upper:]' '[:lower:]' | tr -d ' ')"
+    case "$key" in
+        1|adguard|adguard-dns)
+            echo "$PRESET_ADGUARD"
+            ;;
+        2|cloudflare-security|cf-sec|security|1.1.1.2)
+            echo "$PRESET_CLOUDFLARE_SEC"
+            ;;
+        3|quad9|9.9.9.9)
+            echo "$PRESET_QUAD9"
+            ;;
+        4|mullvad|mullvad-adblock)
+            echo "$PRESET_MULLVAD"
+            ;;
+        5|cloudflare|cloudflare-standard|1.1.1.1)
+            echo "$PRESET_CLOUDFLARE_STD"
+            ;;
+        *)
+            echo ""
+            ;;
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# Prompt User for DoH URL / Preset Selection
 # ------------------------------------------------------------------------------
 prompt_for_url() {
     local default_current=""
@@ -439,57 +474,88 @@ prompt_for_url() {
     fi
 
     echo ""
-    echo -e "${COLOR_BOLD}Enter your Custom DNS-over-HTTPS (DoH) URL:${COLOR_RESET}"
-    echo -e "${COLOR_DIM}Examples:${COLOR_RESET}"
-    echo -e "  • NextDNS:    ${COLOR_CYAN}https://dns.nextdns.io/xxxxxx${COLOR_RESET}"
-    echo -e "  • AdGuard:    ${COLOR_CYAN}https://dns.adguard-dns.com/dns-query${COLOR_RESET}"
-    echo -e "  • Cloudflare: ${COLOR_CYAN}https://cloudflare-dns.com/dns-query${COLOR_RESET}"
-    echo -e "  • ControlD:   ${COLOR_CYAN}https://dns.controld.com/xxxxxx${COLOR_RESET}"
-    echo -e "  • Self-hosted:${COLOR_CYAN}https://dns.yourdomain.com/dns-query${COLOR_RESET}"
+    echo -e "${COLOR_BOLD}Select a DNS-over-HTTPS (DoH) Provider:${COLOR_RESET}"
+    echo ""
+    echo -e "  ${COLOR_CYAN}Popular Privacy Presets (No account required):${COLOR_RESET}"
+    echo -e "  [1] AdGuard DNS          ${COLOR_DIM}(DoH + Ad & Tracker Blocking)${COLOR_RESET}"
+    echo -e "  [2] Cloudflare Security  ${COLOR_DIM}(1.1.1.2 - Malware & Threat Protection)${COLOR_RESET}"
+    echo -e "  [3] Quad9                ${COLOR_DIM}(9.9.9.9 - Swiss Privacy & Threat Protection)${COLOR_RESET}"
+    echo -e "  [4] Mullvad DNS          ${COLOR_DIM}(Strict Zero-Log Privacy + Ad Blocking)${COLOR_RESET}"
+    echo -e "  [5] Cloudflare Standard  ${COLOR_DIM}(1.1.1.1 - Ultra-Fast Clean DoH)${COLOR_RESET}"
+    echo ""
+    echo -e "  ${COLOR_CYAN}Custom Endpoint:${COLOR_RESET}"
+    echo -e "  [6] Enter Custom DoH URL ${COLOR_DIM}(NextDNS, ControlD, Pi-hole, Self-Hosted)${COLOR_RESET}"
     echo ""
 
+    local prompt_msg="Select option [1-6]"
+    if [ -n "$default_current" ]; then
+        prompt_msg="Select option [1-6] [current: ${default_current}]"
+    fi
+
     while true; do
-        local user_input=""
-        if [ -n "$default_current" ]; then
-            prompt_read "DoH URL [current: ${default_current}]: " user_input
-            if [ -z "$user_input" ]; then
-                user_input="$default_current"
+        local choice=""
+        prompt_read "${prompt_msg}: " choice
+
+        if [ -z "$choice" ] && [ -n "$default_current" ]; then
+            SELECTED_DOH_URL="$default_current"
+            break
+        fi
+
+        local preset_match
+        preset_match="$(resolve_preset_url "$choice")"
+
+        if [ -n "$preset_match" ]; then
+            if verify_doh_url "$preset_match"; then
+                SELECTED_DOH_URL="$preset_match"
+                break
+            fi
+        elif [ "$choice" = "6" ] || [ "$choice" = "c" ] || [ "$choice" = "custom" ]; then
+            echo ""
+            echo -e "${COLOR_BOLD}Enter your Custom DoH URL:${COLOR_RESET}"
+            echo -e "${COLOR_DIM}Examples:${COLOR_RESET}"
+            echo -e "  • NextDNS:    ${COLOR_CYAN}https://dns.nextdns.io/xxxxxx${COLOR_RESET}"
+            echo -e "  • ControlD:   ${COLOR_CYAN}https://dns.controld.com/xxxxxx${COLOR_RESET}"
+            echo -e "  • Self-hosted:${COLOR_CYAN}https://dns.yourdomain.com/dns-query${COLOR_RESET}"
+            echo ""
+            local custom_url=""
+            prompt_read "DoH URL: " custom_url
+            if [ -z "$custom_url" ]; then
+                log_warn "URL cannot be empty."
+                continue
+            fi
+            custom_url="$(sanitize_url "$custom_url")"
+            if verify_doh_url "$custom_url"; then
+                SELECTED_DOH_URL="$custom_url"
+                break
+            else
+                echo ""
+                log_warn "The URL could not be validated. Would you like to:"
+                echo "  [1] Re-enter another URL (Recommended)"
+                echo "  [2] Use this URL anyway (Ignore failure)"
+                echo "  [3] Return to preset selection"
+                prompt_read "Select option [1-3]: " fallback_choice
+                case "$fallback_choice" in
+                    2)
+                        SELECTED_DOH_URL="$custom_url"
+                        break
+                        ;;
+                    3)
+                        continue
+                        ;;
+                    *)
+                        continue
+                        ;;
+                esac
+            fi
+        elif [[ "$choice" =~ ^https?:// ]] || [[ "$choice" =~ \. ]]; then
+            local direct_url
+            direct_url="$(sanitize_url "$choice")"
+            if verify_doh_url "$direct_url"; then
+                SELECTED_DOH_URL="$direct_url"
+                break
             fi
         else
-            prompt_read "DoH URL: " user_input
-        fi
-
-        if [ -z "$user_input" ]; then
-            log_warn "URL cannot be empty."
-            continue
-        fi
-
-        local sanitized_url
-        sanitized_url="$(sanitize_url "$user_input")"
-
-        if verify_doh_url "$sanitized_url"; then
-            SELECTED_DOH_URL="$sanitized_url"
-            break
-        else
-            echo ""
-            log_warn "The URL could not be validated. Would you like to:"
-            echo "  [1] Re-enter another URL (Recommended)"
-            echo "  [2] Use this URL anyway (Ignore failure)"
-            echo "  [3] Cancel setup"
-            prompt_read "Select option [1-3]: " choice
-            case "$choice" in
-                2)
-                    SELECTED_DOH_URL="$sanitized_url"
-                    break
-                    ;;
-                3)
-                    log_info "Setup cancelled by user."
-                    exit 0
-                    ;;
-                *)
-                    continue
-                    ;;
-            esac
+            log_warn "Invalid selection. Please choose 1-6 or enter a DoH URL."
         fi
     done
 }
@@ -1164,7 +1230,14 @@ do_set_url() {
         prompt_for_url
         new_url="$SELECTED_DOH_URL"
     else
-        new_url="$(sanitize_url "$new_url")"
+        local preset_match
+        preset_match="$(resolve_preset_url "$new_url")"
+        if [ -n "$preset_match" ]; then
+            new_url="$preset_match"
+        else
+            new_url="$(sanitize_url "$new_url")"
+        fi
+
         if ! verify_doh_url "$new_url"; then
             echo ""
             read -r -p "Verification failed. Do you still want to apply this URL? [y/N]: " force_choice
@@ -1566,7 +1639,7 @@ show_menu() {
 
         echo -e "  Current Status: ${status_str}"
         echo -e "  Active DoH URL: ${COLOR_CYAN}${current_url}${COLOR_RESET}"
-        echo "  [1] Change DoH URL"
+        echo "  [1] Change DoH URL / Select Preset"
         echo "  [2] View Status & Live Diagnostics"
         echo "  [3] Verify Security, Encryption & Leak Test"
         echo "  [4] Live Query Monitor (dnsmonitor)"
@@ -1642,8 +1715,9 @@ main() {
             echo "Commands:"
             echo "  (no args)             Open interactive menu (or run initial setup)"
             echo "  install               Run initial installation & configuration"
+            echo "  presets               Select a built-in popular privacy preset"
             echo "  monitor, watch        Stream real-time DNS queries (dnsmonitor)"
-            echo "  set <url>             Update upstream DoH URL"
+            echo "  set [preset|url]      Update upstream DoH URL or select a preset"
             echo "  verify, leak-test     Verify encrypted DoH transport and leak-free status"
             echo "  status                Display current service status and health"
             echo "  test [domain]         Perform live DNS query test and benchmark"
@@ -1674,6 +1748,9 @@ main() {
     case "$cmd" in
         install)
             do_install
+            ;;
+        presets|preset)
+            do_set_url ""
             ;;
         monitor|watch|live)
             do_monitor
