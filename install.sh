@@ -15,6 +15,8 @@ if [ -n "${SCRIPT_DIR}" ] && [ -f "${LOCAL_SCRIPT}" ]; then
 else
     # Piped zero-clone mode
     TMP_DIR="$(mktemp -d /tmp/dnszen-install.XXXXXX)"
+    trap 'rm -rf "${TMP_DIR}"' EXIT INT TERM
+    chmod 700 "${TMP_DIR}"
     mkdir -p "${TMP_DIR}/scripts"
     echo "[>] Fetching DNSZen installer from GitHub..."
     if command -v curl >/dev/null 2>&1; then
@@ -25,6 +27,6 @@ else
         echo "[ERROR] curl or wget is required to install DNSZen." >&2
         exit 1
     fi
-    chmod +x "${TMP_DIR}/scripts/dnszen.sh"
-    exec "${TMP_DIR}/scripts/dnszen.sh" "$@"
+    chmod 700 "${TMP_DIR}/scripts/dnszen.sh"
+    "${TMP_DIR}/scripts/dnszen.sh" "$@"
 fi

@@ -16,8 +16,15 @@ if (Test-Path $localScript) {
     & $localScript $Command $Arg
 } else {
     $repoRaw = "https://raw.githubusercontent.com/mxskeen/dnszen/master/scripts/dnszen.ps1"
-    $tempScript = "$env:TEMP\dnszen.ps1"
+    $tempScript = "$env:TEMP\dnszen_$([guid]::NewGuid().ToString('N')).ps1"
     Write-Host "[>] Fetching DNSZen installer from GitHub..." -ForegroundColor Cyan
-    Invoke-WebRequest -Uri $repoRaw -OutFile $tempScript -UseBasicParsing
-    & $tempScript $Command $Arg
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+        Invoke-WebRequest -Uri $repoRaw -OutFile $tempScript -UseBasicParsing
+        & $tempScript $Command $Arg
+    } finally {
+        if (Test-Path $tempScript) {
+            Remove-Item -Force $tempScript -ErrorAction SilentlyContinue
+        }
+    }
 }
