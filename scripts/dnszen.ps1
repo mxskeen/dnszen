@@ -27,6 +27,26 @@ $DnsproxyExe = "$BinDir\dnsproxy.exe"
 $LogFile = "$InstallDir\dnszen.log"
 $TaskName = "DNSZen"
 
+# Known SHA-256 checksums for official AdGuard dnsproxy releases
+$DnsproxyHashes = @{
+    "windows-386"   = "aa53414c06ca4f7170ec80309470dd5bf6bd72350c602b6f6b0ba7ddf930e90a"
+    "windows-amd64" = "5b7b57b77169f6748618ed2bc2a35060f774fe2bac14a0e54352b1d502fe61eb"
+    "windows-arm64" = "44cc95bdb1c8032ce857a657def7468f40504f58c478131fa8c13b2c890ba8a4"
+}
+
+function Verify-FileSha256([string]$filePath, [string]$expectedHash) {
+    if (-not (Test-Path $filePath)) {
+        throw "Target file not found for checksum verification: $filePath"
+    }
+    $actualHash = (Get-FileHash -Path $filePath -Algorithm SHA256).Hash.ToLower()
+    $expectedHash = $expectedHash.ToLower()
+
+    if ($actualHash -ne $expectedHash) {
+        throw "SECURITY ALERT: Checksum verification failed for $(Split-Path $filePath -Leaf)! Expected: $expectedHash, Got: $actualHash. The downloaded archive may have been corrupted or tampered with."
+    }
+    Write-Host "[OK] Cryptographic checksum verified: SHA-256 matches official release." -ForegroundColor Green
+}
+
 function Show-Banner {
     Write-Host "" -ForegroundColor Cyan
     Write-Host "  ===============================================================" -ForegroundColor Cyan
@@ -72,50 +92,53 @@ function Install-Dnsproxy {
     }
 
     $arch = Detect-Arch
-    Write-Host "[>] Detecting latest release for windows-$arch..." -ForegroundColor Cyan
+    $platformKey = "windows-$arch"
+    $expectedHash = $DnsproxyHashes[$platformKey]
+
+    if (-not $expectedHash) {
+        throw "No verified cryptographic checksum found for platform: $platformKey. Aborting installation."
+    }
 
     $tag = $DefaultDnsproxyVer
-    try {
-        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/AdguardTeam/dnsproxy/releases/latest" -TimeoutSec 5 -ErrorAction SilentlyContinue
-        if ($release.tag_name) {
-            $tag = $release.tag_name
-        }
-    } catch {}
-
     $zipName = "dnsproxy-windows-$arch-$tag.zip"
     $downloadUrl = "https://github.com/AdguardTeam/dnsproxy/releases/download/$tag/$zipName"
-    $tempZip = "$env:TEMP\$zipName"
+    $randId = [guid]::NewGuid().ToString('N')
+    $tempZip = "$env:TEMP\dnszen_$randId.zip"
+    $extractTemp = "$env:TEMP\dnszen_extract_$randId"
 
-    Write-Host "[>] Downloading dnsproxy ($tag)..." -ForegroundColor Cyan
+    Write-Host "[>] Downloading AdGuard dnsproxy engine ($tag) for $platformKey..." -ForegroundColor Cyan
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
         Invoke-WebRequest -Uri $downloadUrl -OutFile $tempZip -UseBasicParsing
     } catch {
-        Write-Warning "Primary download failed. Trying fallback version $DefaultDnsproxyVer..."
-        $zipName = "dnsproxy-windows-$arch-$DefaultDnsproxyVer.zip"
-        $downloadUrl = "https://github.com/AdguardTeam/dnsproxy/releases/download/$DefaultDnsproxyVer/$zipName"
-        Invoke-WebRequest -Uri $downloadUrl -OutFile $tempZip -UseBasicParsing
+        if (Test-Path $tempZip) { Remove-Item -Force $tempZip -ErrorAction SilentlyContinue }
+        throw "Failed to download dnsproxy archive from $downloadUrl: $_"
     }
 
-    New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
-    $extractTemp = "$env:TEMP\dnszen_extract"
-    if (Test-Path $extractTemp) { Remove-Item -Recurse -Force $extractTemp }
-    Expand-Archive -Path $tempZip -DestinationPath $extractTemp -Force
+    try {
+        Write-Host "[>] Verifying cryptographic checksum (SHA-256)..." -ForegroundColor Cyan
+        Verify-FileSha256 $tempZip $expectedHash
 
-    $foundExe = Get-ChildItem -Path $extractTemp -Filter "dnsproxy.exe" -Recurse | Select-Object -First 1
-    if (-not $foundExe) {
-        throw "Could not locate dnsproxy.exe inside downloaded archive."
+        New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
+        Expand-Archive -Path $tempZip -DestinationPath $extractTemp -Force
+
+        $foundExe = Get-ChildItem -Path $extractTemp -Filter "dnsproxy.exe" -Recurse | Select-Object -First 1
+        if (-not $foundExe) {
+            throw "Could not locate dnsproxy.exe inside downloaded archive."
+        }
+
+        Copy-Item $foundExe.FullName -Destination $DnsproxyExe -Force
+        Write-Host "[OK] Verified and installed dnsproxy engine to $DnsproxyExe" -ForegroundColor Green
+    } finally {
+        if (Test-Path $tempZip) { Remove-Item -Force $tempZip -ErrorAction SilentlyContinue }
+        if (Test-Path $extractTemp) { Remove-Item -Recurse -Force $extractTemp -ErrorAction SilentlyContinue }
     }
-
-    Copy-Item $foundExe.FullName -Destination $DnsproxyExe -Force
-    Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
-    Remove-Item $extractTemp -Recurse -Force -ErrorAction SilentlyContinue
-
-    Write-Host "[OK] Installed dnsproxy engine to $DnsproxyExe" -ForegroundColor Green
 }
 
 function Sanitize-Url([string]$raw) {
-    $clean = $raw.Trim()
+    # Strip newlines, quotes, and control chars to prevent YAML injection
+    $clean = $raw -replace "[\r\n\t`"']", ""
+    $clean = $clean.Trim()
     if ($clean -notmatch "^https?://") {
         $clean = "https://$clean"
     }
@@ -245,8 +268,18 @@ function Prompt-DoHUrl {
     }
 }
 
+function Secure-InstallDirectory {
+    if (Test-Path $InstallDir) {
+        # Lock down permissions: Only SYSTEM and Administrators have write access
+        try {
+            icacls "$InstallDir" /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-32-545:(OI)(CI)RX" /T /C /Q 2>$null
+        } catch {}
+    }
+}
+
 function Write-ProxyConfig([string]$url) {
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+    Secure-InstallDirectory
     $yaml = @"
 # Generated by DNSZen
 listen-addrs:
@@ -393,6 +426,7 @@ function Invoke-Install {
 
     # Create global CLI wrappers in C:\Windows\dnszen.cmd and C:\Windows\dnsmonitor.cmd
     Copy-Item $MyInvocation.MyCommand.Path -Destination "$InstallDir\dnszen.ps1" -Force -ErrorAction SilentlyContinue
+    Secure-InstallDirectory
     $cmdWrapper = @"
 @echo off
 powershell.exe -ExecutionPolicy Bypass -NoProfile -File "$InstallDir\dnszen.ps1" %*

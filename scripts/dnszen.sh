@@ -72,7 +72,7 @@ prompt_read() {
     else
         read -r -p "$prompt_msg" input_val
     fi
-    eval "$__resultvar=\"\$input_val\""
+    printf -v "$__resultvar" '%s' "$input_val"
 }
 
 # ------------------------------------------------------------------------------
@@ -277,6 +277,11 @@ ensure_dependencies() {
         log_err "The 'tar' utility is required but not found. Please install tar."
         exit 1
     fi
+
+    if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1 && ! command -v openssl >/dev/null 2>&1; then
+        log_err "A SHA-256 verification utility (sha256sum, shasum, or openssl) is required."
+        exit 1
+    fi
 }
 
 download_file() {
@@ -293,41 +298,116 @@ download_file() {
 }
 
 # ------------------------------------------------------------------------------
+# Cryptographic Integrity Verification
+# ------------------------------------------------------------------------------
+get_dnsproxy_expected_sha256() {
+    local platform="$1"
+    case "$platform" in
+        darwin-amd64)   echo "48ea71b4f3d3f78d39f3e5bce43379bef41889e32fc45b8391598df9dd3b55c1" ;;
+        darwin-arm64)   echo "64c2a6c2645745e24369f21c9e22661a18bfcfdcbdd8ff54af0d37328b3ea9e6" ;;
+        freebsd-386)    echo "55b3795372854e54f0a86c5334d6e3f9c50a5aa2f3bd02a2f388b02bca065d9f" ;;
+        freebsd-amd64)  echo "0150bea751cecb37f2ad07d8f504cd67bb546568efe72de2abd8ed4d3d49ce9a" ;;
+        freebsd-arm5)   echo "6e883190ae81a566cb8249b0463746866b8487d4b095b025116cbbf4da1bbd6d" ;;
+        freebsd-arm6)   echo "51a83be747143463caf3e5bd99dbf3b12c491c9ee363f5596fe0d944661501cc" ;;
+        freebsd-arm7)   echo "8bb2e4b5fe37cb3a90994a458a10e6e3c7c8239d1ea8ed5a090e4b89a1f2880d" ;;
+        freebsd-arm64)  echo "ba83ed1f98dd607186d733acd2fc3ec25bf9fcb2e4fb04168c98731d1036166c" ;;
+        linux-386)      echo "d208a6c8137f3e97b9c69a0aee8b433cf5ed1497ad72dfdd103f7a00c93d35e0" ;;
+        linux-amd64)    echo "740af768b17fe8ecc2dbc8c82c7b5224e43278a181b4fe31b0cce5d8da656332" ;;
+        linux-arm5)     echo "f6ecc5c51ffd0e49ded5fe0402ab0dbcb1cbe97c1baebae98aff89e5882f11ed" ;;
+        linux-arm6)     echo "ee25b7273e89b18a89ecc96f834812693d3155f9d1eab2016090c8bfc598009a" ;;
+        linux-arm7)     echo "d8fbe368a25a9f0f9f014453933560a3d1e3d7e583265b9b80d1cb3e25d0b6b4" ;;
+        linux-arm64)    echo "6243b9e6c48d2fce9eee0c1170566b8474768ec87602baccbc6dc44514a83568" ;;
+        linux-mips)     echo "ffc7aeec25112445704dd8c0ca361540f04fad723c13991812b51515375120bf" ;;
+        linux-mips64)   echo "045d763cd276c2bbd667b6a957fa9d13326faf892c59c783e79da1846054feee" ;;
+        linux-mips64le) echo "a061ddca8e0f889918ebc8d3b701642248ff5490d25bf68f40faa7c019b8df92" ;;
+        linux-mipsle)   echo "637eccec01d1e46e6b257a243258e3c24ee7ce1c7bab9f63886a5b62271d023d" ;;
+        linux-ppc64le)  echo "462e9d266793694239a9c68ca56c853bdb8a6808413ef021a9dc821100508413" ;;
+        openbsd-amd64)  echo "a7dc8d068525e4c378382fe9d50301da53f68358b9480ff609b96e6333ba3f9a" ;;
+        openbsd-arm64)  echo "32a5293e4232290551e0911dfc3b9cddb787a1d84015c1f6b28d489517d3816a" ;;
+        *) echo "" ;;
+    esac
+}
+
+verify_file_sha256() {
+    local file="$1"
+    local expected="$2"
+    local actual=""
+
+    if [ ! -f "$file" ]; then
+        log_err "Target file not found for checksum verification: $file"
+        return 1
+    fi
+
+    if command -v sha256sum >/dev/null 2>&1; then
+        actual=$(sha256sum "$file" | awk '{print $1}')
+    elif command -v shasum >/dev/null 2>&1; then
+        actual=$(shasum -a 256 "$file" | awk '{print $1}')
+    elif command -v openssl >/dev/null 2>&1; then
+        actual=$(openssl dgst -sha256 "$file" | awk '{print $NF}')
+    else
+        log_err "No SHA-256 verification utility (sha256sum, shasum, openssl) found on system."
+        return 1
+    fi
+
+    actual="$(echo "$actual" | tr '[:upper:]' '[:lower:]')"
+    expected="$(echo "$expected" | tr '[:upper:]' '[:lower:]')"
+
+    if [ "$actual" != "$expected" ]; then
+        log_err "SECURITY ALERT: Checksum verification failed for $(basename "$file")!"
+        log_err "Expected: ${expected}"
+        log_err "Actual:   ${actual}"
+        log_err "The downloaded archive may be corrupted or tampered with. Installation aborted."
+        return 1
+    fi
+
+    log_ok "Cryptographic checksum verified: SHA-256 matches official release."
+    return 0
+}
+
+# ------------------------------------------------------------------------------
 # Install dnsproxy Core Engine
 # ------------------------------------------------------------------------------
 install_dnsproxy_binary() {
     mkdir -p "${BIN_DIR}" "${CONFIG_DIR}" "${BACKUP_DIR}"
+    chmod 700 "${CONFIG_DIR}" "${BACKUP_DIR}" 2>/dev/null || true
 
     if [ -x "${DNSPROXY_BIN}" ]; then
         log_ok "DNS proxy binary already present at ${DNSPROXY_BIN}."
         return 0
     fi
 
-    log_step "Fetching latest AdGuard dnsproxy release for ${TARGET_OS}-${TARGET_ARCH}..."
+    local tag="${DNSPROXY_DEFAULT_VER}"
+    local platform_key="${TARGET_OS}-${TARGET_ARCH}"
+    local expected_hash
+    expected_hash="$(get_dnsproxy_expected_sha256 "${platform_key}")"
 
-    local tag=""
-    if command -v curl >/dev/null 2>&1; then
-        tag=$(curl -sSL -m 5 https://api.github.com/repos/AdguardTeam/dnsproxy/releases/latest 2>/dev/null | grep -o '"tag_name": *"[^"]*"' | head -n 1 | cut -d '"' -f 4 || true)
-    fi
-    if [ -z "$tag" ]; then
-        tag="${DNSPROXY_DEFAULT_VER}"
+    if [ -z "${expected_hash}" ]; then
+        log_err "No verified cryptographic checksum found for platform: ${platform_key}."
+        log_err "To protect system security, binary installation cannot proceed without an official checksum."
+        exit 1
     fi
 
     local archive_name="dnsproxy-${TARGET_OS}-${TARGET_ARCH}-${tag}.tar.gz"
     local download_url="https://github.com/AdguardTeam/dnsproxy/releases/download/${tag}/${archive_name}"
 
-    log_info "Downloading ${archive_name} (${tag})..."
+    log_step "Downloading AdGuard dnsproxy engine (${tag}) for ${platform_key}..."
     local tmp_dir
     tmp_dir=$(mktemp -d /tmp/dnszen-dl.XXXXXX)
+    chmod 700 "${tmp_dir}"
 
     if ! download_file "${download_url}" "${tmp_dir}/${archive_name}"; then
-        log_warn "Failed to download from primary URL. Trying fallback version ${DNSPROXY_DEFAULT_VER}..."
-        archive_name="dnsproxy-${TARGET_OS}-${TARGET_ARCH}-${DNSPROXY_DEFAULT_VER}.tar.gz"
-        download_url="https://github.com/AdguardTeam/dnsproxy/releases/download/${DNSPROXY_DEFAULT_VER}/${archive_name}"
-        download_file "${download_url}" "${tmp_dir}/${archive_name}"
+        rm -rf "${tmp_dir}"
+        log_err "Failed to download dnsproxy archive from: ${download_url}"
+        exit 1
     fi
 
-    log_info "Extracting..."
+    log_step "Verifying cryptographic checksum (SHA-256)..."
+    if ! verify_file_sha256 "${tmp_dir}/${archive_name}" "${expected_hash}"; then
+        rm -rf "${tmp_dir}"
+        exit 1
+    fi
+
+    log_info "Extracting verified archive..."
     tar -xzf "${tmp_dir}/${archive_name}" -C "${tmp_dir}"
 
     local extracted_bin
@@ -343,7 +423,7 @@ install_dnsproxy_binary() {
     chmod 755 "${DNSPROXY_BIN}"
     rm -rf "${tmp_dir}"
 
-    log_ok "Installed dnsproxy engine to ${DNSPROXY_BIN}."
+    log_ok "Verified and installed dnsproxy engine to ${DNSPROXY_BIN}."
 }
 
 # ------------------------------------------------------------------------------
@@ -370,6 +450,8 @@ install_cli_symlink() {
 # ------------------------------------------------------------------------------
 sanitize_url() {
     local raw="$1"
+    # Strip carriage returns, newlines, tabs, and quotes to prevent YAML/command injection
+    raw="$(echo "$raw" | tr -d '\r\n\t"'\''')"
     # Trim leading and trailing whitespace
     raw="${raw#"${raw%%[![:space:]]*}"}"
     raw="${raw%"${raw##*[![:space:]]}"}"
@@ -668,9 +750,9 @@ timeout: "6s"
 output: "${LOG_FILE}"
 verbose: true
 EOF
-    chmod 644 "${CONFIG_FILE}"
+    chmod 600 "${CONFIG_FILE}"
     touch "${LOG_FILE}" 2>/dev/null || true
-    chmod 644 "${LOG_FILE}" 2>/dev/null || true
+    chmod 640 "${LOG_FILE}" 2>/dev/null || true
 
     # Install logrotate rule if logrotate directory exists
     if [ -d /etc/logrotate.d ]; then
@@ -879,6 +961,19 @@ AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 LimitNOFILE=65535
 
+# Systemd Security Sandboxing
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+ReadWritePaths=/var/log /run
+
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -999,6 +1094,7 @@ ARCH="${TARGET_ARCH}"
 UPDATED_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 VERSION="${VERSION}"
 EOF
+    chmod 600 "${STATE_FILE}"
 }
 
 # ------------------------------------------------------------------------------
