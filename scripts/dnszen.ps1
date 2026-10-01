@@ -780,23 +780,27 @@ function Show-Menu {
         Write-Host "  Current Status: $statusStr" -ForegroundColor Green
         Write-Host "  Active DoH URL: $currentUrl" -ForegroundColor Cyan
         Write-Host ""
-        Write-Host "  [1] Change DoH URL / Select Preset"
-        Write-Host "  [2] View Status & Live Diagnostics"
-        Write-Host "  [3] Verify Security, Encryption & Leak Test"
-        Write-Host "  [4] Live Query Monitor (dnsmonitor)"
-        Write-Host "  [5] Test DNS Resolution & Speed"
-        Write-Host "  [6] Restart DNSZen Service"
+        Write-Host "  DNS Configuration & Tools:" -ForegroundColor White
+        Write-Host "    [1] Change DoH URL / Select Preset"
+        Write-Host "    [2] Live Query Monitor (dnsmonitor)"
+        Write-Host "    [3] Verify Security, Encryption & Leak Test"
+        Write-Host "    [4] Test DNS Resolution & Speed"
+        Write-Host "    [5] View Status & Live Diagnostics"
+        Write-Host ""
+        Write-Host "  Service & Maintenance:" -ForegroundColor White
+        Write-Host "    [6] Restart DNSZen Service"
+        Write-Host "    [7] View Service Logs"
         if ($updateVer) {
-            Write-Host "  [7] Update DNSZen (v$Version -> v$updateVer)" -ForegroundColor Green
+            Write-Host "    [8] Update DNSZen (v$Version -> v$updateVer)" -ForegroundColor Green
         } else {
-            Write-Host "  [7] Update DNSZen"
+            Write-Host "    [8] Update DNSZen"
         }
-        Write-Host "  [8] Revert to Original DNS & Uninstall"
+        Write-Host "    [9] Revert to Original DNS & Uninstall"
         Write-Host ""
-        Write-Host "  Author GitHub: https://github.com/mxskeen/dnszen/" -ForegroundColor Cyan
-        Write-Host "  [9] Exit"
+        Write-Host "    Author GitHub: https://github.com/mxskeen/dnszen/" -ForegroundColor DarkCyan
+        Write-Host "    [0] Exit"
         Write-Host ""
-        $choice = Read-Host "Select option [1-9]"
+        $choice = Read-Host "Select option [0-9]"
         switch ($choice) {
             "1" {
                 $newUrl = Prompt-DoHUrl
@@ -810,7 +814,7 @@ function Show-Menu {
                 Read-Host "Press Enter to return to menu..."
             }
             "2" {
-                Show-Status
+                Show-LiveMonitor
                 Read-Host "Press Enter to return to menu..."
             }
             "3" {
@@ -818,13 +822,13 @@ function Show-Menu {
                 Read-Host "Press Enter to return to menu..."
             }
             "4" {
-                Show-LiveMonitor
-                Read-Host "Press Enter to return to menu..."
-            }
-            "5" {
                 $dom = Read-Host "Enter domain to test [default: cloudflare.com]"
                 if (-not $dom) { $dom = "cloudflare.com" }
                 Resolve-DnsName -Name $dom -Server "127.0.0.1"
+                Read-Host "Press Enter to return to menu..."
+            }
+            "5" {
+                Show-Status
                 Read-Host "Press Enter to return to menu..."
             }
             "6" {
@@ -834,6 +838,14 @@ function Show-Menu {
                 Read-Host "Press Enter to return to menu..."
             }
             "7" {
+                if (Test-Path $LogFile) {
+                    Get-Content -Path $LogFile -Tail 50
+                } else {
+                    Write-Host "No log file found at $LogFile" -ForegroundColor DarkGray
+                }
+                Read-Host "Press Enter to return to menu..."
+            }
+            "8" {
                 Invoke-Update
                 Read-Host "Press Enter to return to menu..."
             }
@@ -841,17 +853,17 @@ function Show-Menu {
                 Invoke-Update
                 Read-Host "Press Enter to return to menu..."
             }
-            "8" {
+            "9" {
                 $confirm = Read-Host "Are you sure you want to revert to original DNS? [y/N]"
                 if ($confirm -match "^[yY]") {
                     Revert-SystemDNS
                     Exit
                 }
             }
-            "9" {
+            "0" {
                 Exit
             }
-            "0" {
+            "q" {
                 Exit
             }
         }

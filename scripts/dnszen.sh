@@ -1804,22 +1804,26 @@ show_menu() {
 
         echo -e "  Current Status: ${status_str}"
         echo -e "  Active DoH URL: ${COLOR_CYAN}${current_url}${COLOR_RESET}"
-        echo "  [1] Change DoH URL / Select Preset"
-        echo "  [2] View Status & Live Diagnostics"
-        echo "  [3] Verify Security, Encryption & Leak Test"
-        echo "  [4] Live Query Monitor (dnsmonitor)"
-        echo "  [5] Test DNS Resolution & Speed"
-        echo "  [6] Restart DNSZen Service"
-        echo "  [7] View Logs"
-        if [ -n "$AVAILABLE_UPDATE_VER" ]; then
-            echo -e "  [8] ${COLOR_GREEN}Update DNSZen (v${VERSION} -> v${AVAILABLE_UPDATE_VER})${COLOR_RESET}"
-        else
-            echo "  [8] Update DNSZen"
-        fi
-        echo "  [9] Revert to Original DNS & Uninstall"
         echo ""
-        echo -e "  Author GitHub: ${COLOR_CYAN}https://github.com/mxskeen/dnszen/${COLOR_RESET}"
-        echo "  [0] Exit"
+        echo -e "  ${COLOR_BOLD}DNS Configuration & Tools:${COLOR_RESET}"
+        echo "    [1] Change DoH URL / Select Preset"
+        echo "    [2] Live Query Monitor (dnsmonitor)"
+        echo "    [3] Verify Security, Encryption & Leak Test"
+        echo "    [4] Test DNS Resolution & Speed"
+        echo "    [5] View Status & Live Diagnostics"
+        echo ""
+        echo -e "  ${COLOR_BOLD}Service & Maintenance:${COLOR_RESET}"
+        echo "    [6] Restart DNSZen Service"
+        echo "    [7] View Service Logs"
+        if [ -n "$AVAILABLE_UPDATE_VER" ]; then
+            echo -e "    [8] ${COLOR_GREEN}Update DNSZen (v${VERSION} -> v${AVAILABLE_UPDATE_VER})${COLOR_RESET}"
+        else
+            echo "    [8] Update DNSZen"
+        fi
+        echo "    [9] Revert to Original DNS & Uninstall"
+        echo ""
+        echo -e "    ${COLOR_DIM}Author GitHub: https://github.com/mxskeen/dnszen/${COLOR_RESET}"
+        echo "    [0] Exit"
         echo ""
         prompt_read "Select option [0-9]: " menu_choice
 
@@ -1829,7 +1833,7 @@ show_menu() {
                 prompt_read "Press Enter to return to menu..." _dummy
                 ;;
             2)
-                do_status
+                do_monitor
                 prompt_read "Press Enter to return to menu..." _dummy
                 ;;
             3)
@@ -1837,13 +1841,13 @@ show_menu() {
                 prompt_read "Press Enter to return to menu..." _dummy
                 ;;
             4)
-                do_monitor
-                prompt_read "Press Enter to return to menu..." _dummy
-                ;;
-            5)
                 prompt_read "Enter domain to test [default: cloudflare.com]: " test_dom
                 test_dom="${test_dom:-cloudflare.com}"
                 run_live_test "$test_dom"
+                prompt_read "Press Enter to return to menu..." _dummy
+                ;;
+            5)
+                do_status
                 prompt_read "Press Enter to return to menu..." _dummy
                 ;;
             6)
